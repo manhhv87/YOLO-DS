@@ -1,0 +1,17 @@
+# SolDef_A dataset — YOLO format (binary OK / NG)
+# Converted from soldef/raw/Labeled/ by convert_soldef_to_yolo.py
+#
+# Stats:
+#   - 428 annotated images (subset of 1636 raw images)
+#   - Component types: R0805, R1206, R0603, C0805
+#   - train: 300 | val: 64 | test: 64
+#   - OK: 186 instances | NG: 485 instances
+
+path: C:/Users/manhh/Desktop/PCB/train/datasets/soldef
+train: train/images
+val:   val/images
+test:  test/images
+names:
+  0: OK
+  1: NG
+nc: 2

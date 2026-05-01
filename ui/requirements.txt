@@ -1,0 +1,21 @@
+# Runtime dependencies for the AVI UI application.
+# Trim version pins as needed for your deployment Python (e.g. 3.9 / 3.10).
+
+# YOLO inference
+ultralytics>=8.1.0
+
+# Vision
+opencv-python>=4.8.0
+scikit-image>=0.21.0
+numpy>=1.24
+matplotlib>=3.7        # only used by debug visualisations in core/algorithm.py
+
+# Industrial I/O
+pypylon>=3.0           # Basler GigE Vision SDK (vendor wheels)
+opcua>=0.98            # OPC UA client / server
+
+# UI
+PyQt5>=5.15
+
+# Optional: torch is pulled by ultralytics; pin if you need a specific build
+# torch>=2.0

@@ -1,0 +1,12 @@
+{
+  "mode": "binary",
+  "n_train": 300,
+  "n_val": 64,
+  "n_test": 64,
+  "n_total": 428,
+  "instance_counts": {
+    "NG": 485,
+    "OK": 186
+  },
+  "seed": 0
+}
