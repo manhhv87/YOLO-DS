@@ -508,19 +508,30 @@ def main() -> None:
 
     # ---- Optimizer + scheduler -----------------------------------------
     # Split params into 3 groups (matches Ultralytics): BN+bias (no decay), weights (decay)
+    # + a 4th catch-all group for any remaining params (e.g. CRFM alpha scalars).
     g_bn, g_bias, g_weights = [], [], []
+    _grouped_ids: set[int] = set()
     for m in model.modules():
         if isinstance(m, torch.nn.BatchNorm2d):
             g_bn.append(m.weight)
+            _grouped_ids.add(id(m.weight))
         if hasattr(m, 'bias') and isinstance(m.bias, torch.nn.Parameter):
             g_bias.append(m.bias)
+            _grouped_ids.add(id(m.bias))
         if hasattr(m, 'weight') and isinstance(m.weight, torch.nn.Parameter) \
                 and not isinstance(m, torch.nn.BatchNorm2d):
             g_weights.append(m.weight)
+            _grouped_ids.add(id(m.weight))
+    # Catch-all: named scalars like CRFM's alpha that have neither .weight nor .bias
+    g_other = [p for p in model.parameters() if id(p) not in _grouped_ids]
     optimizer = torch.optim.SGD(
         g_bias + g_bn, lr=args.lr0, momentum=args.momentum, nesterov=True,
     )
     optimizer.add_param_group({'params': g_weights, 'weight_decay': args.weight_decay})
+    if g_other:
+        optimizer.add_param_group({'params': g_other})
+        print(f"[info] optimizer: {len(g_other)} extra param(s) in catch-all group "
+              f"(e.g. CRFM alpha × {len(g_other)})")
 
     warmup_epochs = 3
     def lr_lambda(e: int) -> float:
