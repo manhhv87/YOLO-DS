@@ -449,6 +449,15 @@ def main() -> None:
     model.model_info(gflops=_gflops)
     print()
 
+    # Strip thop's bookkeeping buffers (``total_ops``, ``total_params``) that
+    # ``thop.profile`` injects into every submodule.  Leaving them on the
+    # model would pollute every ``state_dict()`` call and break loading later
+    # via ``load_state_dict(strict=True)``.
+    for _module in model.modules():
+        for _k in list(_module._buffers.keys()):
+            if _k in ("total_ops", "total_params"):
+                _module._buffers.pop(_k, None)
+
     # ---- Loss adapter --------------------------------------------------
     loss_model = _LossCompatModel(model).to(args.device)
     loss_fn = v8DetectionLoss(loss_model)
@@ -466,8 +475,14 @@ def main() -> None:
         # depends on.  Set to 0.0 for single-product / fixed-fixture lines.
         mosaic=args.mosaic,
         hsv_h=0.015, hsv_s=0.7, hsv_v=0.4,
-        flipud=0.0, fliplr=0.5,
-        # No strong geometric aug -- it would defeat the alignment we rely on.
+        # CRITICAL: fliplr must be 0 for DS-YOLO — Ultralytics flips the
+        # capture image but NOT the golden reference.  A flipped capture
+        # produces mirror-image feature maps that differ everywhere from the
+        # unflipped golden, making the diff signal pure noise for half the
+        # training batches and actively harming CRFM learning.
+        flipud=0.0, fliplr=0.0,
+        # No geometric aug -- any spatial distortion breaks capture↔golden
+        # alignment and corrupts the diff signal that CRFM relies on.
         degrees=0.0, translate=0.0, scale=0.0, shear=0.0, perspective=0.0,
     ))
     data_root = Path(data_yaml.get("path", str(Path(args.data).parent)))

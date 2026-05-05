@@ -50,11 +50,13 @@ def load_ds_yolo(
     if key in _CACHE:
         return _CACHE[key]
 
-    ckpt = torch.load(weights_path, map_location=device, weights_only=False)
-    nc = int(ckpt.get("num_classes", 2))
-    model = DSYOLOv8m(num_classes=nc).to(device)
-    model.load_state_dict(ckpt["state_dict"], strict=True)
-    model.eval()
+    # ``from_checkpoint`` reads variant + fusion from the checkpoint, filters
+    # thop bookkeeping buffers, and rebuilds DS-YOLO with the right
+    # architecture even if the model was trained at a different YOLOv8 size.
+    model = DSYOLOv8m.from_checkpoint(weights_path, device=device)
+    nc    = int(model.nc)
+    # Re-open just to recover optional metadata like names/epoch.
+    raw   = torch.load(weights_path, map_location="cpu", weights_only=False)
 
     img = cv2.imread(str(golden_path), cv2.IMREAD_COLOR)
     if img is None:
@@ -63,7 +65,7 @@ def load_ds_yolo(
     img = cv2.resize(img, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
     golden = torch.from_numpy(img).permute(2, 0, 1).float().to(device) / 255.0
 
-    meta = dict(num_classes=nc, names=ckpt.get("names"), epoch=ckpt.get("epoch"))
+    meta = dict(num_classes=nc, names=raw.get("names"), epoch=raw.get("epoch"))
     _CACHE[key] = (model, golden, meta)
     return model, golden, meta
 

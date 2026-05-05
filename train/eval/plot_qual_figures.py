@@ -239,11 +239,9 @@ def _infer_dsyolo(weights_path: str, img_rgb: np.ndarray,
                     [boxes[keep], conf[keep, None], cls_idx[keep, None].float()], dim=1))
             return output
 
-    ckpt  = torch.load(weights_path, map_location=device, weights_only=False)
-    nc    = int(ckpt.get("num_classes", 2))
-    model = DSYOLOv8m(num_classes=nc).to(device)
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval()
+    # Use from_checkpoint to handle variant/fusion + thop pollution.
+    model = DSYOLOv8m.from_checkpoint(weights_path, device=device)
+    nc    = int(model.nc)
 
     def _to_tensor(arr):
         t = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0

@@ -216,10 +216,10 @@ def cmd_perclass(args: argparse.Namespace) -> None:
             from train_ds import load_golden, evaluate as ds_evaluate
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            ckpt   = torch.load(str(weights), map_location=device, weights_only=False)
-            nc     = int(ckpt.get("num_classes", 2))
-            model  = DSYOLOv8m(num_classes=nc).to(device)
-            model.load_state_dict(ckpt["state_dict"], strict=True)
+            # Reads variant/fusion from the checkpoint metadata and filters
+            # thop bookkeeping buffers automatically.
+            model  = DSYOLOv8m.from_checkpoint(str(weights), device=device)
+            nc     = int(model.nc)
 
             with open(args.data) as f:
                 data_yaml = _yaml.safe_load(f)

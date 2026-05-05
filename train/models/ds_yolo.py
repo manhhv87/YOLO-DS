@@ -86,8 +86,17 @@ class CrossRefFusion(nn.Module):
             nn.SiLU(inplace=True),
             nn.Conv2d(mid, channels, kernel_size=1),
         )
-        # alpha=0 -> identity wrt capture features at init.
-        self.alpha = nn.Parameter(torch.zeros(1))
+        # Initialise gate output near zero so CRFM starts as identity and
+        # activates gradually.  sigmoid(-4) ≈ 0.018.
+        nn.init.constant_(self.gate[-1].bias, -4.0)
+        # alpha_raw is unconstrained; actual alpha = softplus(alpha_raw) >= 0.
+        # softplus(0) ≈ 0.693, so true alpha starts small but positive,
+        # preventing the dead-gradient problem and ruling out negative scaling.
+        self.alpha_raw = nn.Parameter(torch.zeros(1))
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        return F.softplus(self.alpha_raw)
 
     def forward(self, f_cap: torch.Tensor, f_gold: torch.Tensor) -> torch.Tensor:
         if f_gold.shape != f_cap.shape:
@@ -236,6 +245,80 @@ class DSYOLOv8m(nn.Module):
         breaking ``nn.Module`` parameter registration.
         """
         return self.head
+
+    # ----- Checkpoint loader (handles variant + thop pollution) ----------
+    @classmethod
+    def from_checkpoint(cls, weights_path: str, device: str = "cpu",
+                         strict: bool = True) -> "DSYOLOv8m":
+        """Re-instantiate a DS-YOLO model from a checkpoint produced by
+        ``train_ds.py``.
+
+        Reads ``variant``, ``fusion`` and ``num_classes`` from the
+        checkpoint metadata so the architecture matches the saved weights,
+        and silently filters out the bookkeeping buffers (``total_ops``,
+        ``total_params``) that ``thop.profile`` injects into the model
+        during training.
+        """
+        import torch as _torch
+
+        ckpt = _torch.load(weights_path, map_location=device, weights_only=False)
+        if "state_dict" not in ckpt:
+            raise ValueError(
+                f"Checkpoint at {weights_path} has no 'state_dict' field. "
+                f"Was it written by train_ds.py?"
+            )
+
+        nc      = int(ckpt.get("num_classes", 2))
+        variant = ckpt.get("args", {}).get("variant") or ckpt.get("variant", "m")
+        fusion  = ckpt.get("fusion") or ckpt.get("args", {}).get("fusion", "crfm")
+
+        model = cls(num_classes=nc, variant=variant, fusion=fusion).to(device)
+
+        # Strip thop-injected buffers (added by thop.profile during training).
+        cleaned = {
+            k: v for k, v in ckpt["state_dict"].items()
+            if not (k.endswith(".total_ops") or k.endswith(".total_params"))
+        }
+
+        # Backward-compat: older checkpoints stored `crfm_*.alpha` directly
+        # (a learnable scalar with no constraint).  The current CRFM uses
+        # `alpha_raw` and computes `alpha = softplus(alpha_raw)`, so a saved
+        # `alpha` of value `a` corresponds to `alpha_raw = log(exp(a) - 1)`
+        # (inverse-softplus).  Migrate the keys silently so old runs keep
+        # loading.
+        import math as _math
+        rename = []
+        for k in list(cleaned.keys()):
+            if k.endswith(".alpha") and not k.endswith(".alpha_raw"):
+                v = cleaned.pop(k)
+                # inverse-softplus, clamping the input away from zero to keep
+                # the result finite (softplus is convex, so the inverse blows
+                # up as alpha → 0).
+                a_val = float(v.flatten()[0])
+                if a_val <= 1e-6:
+                    raw = -10.0  # softplus(-10) ≈ 4.5e-5 ≈ 0
+                else:
+                    raw = _math.log(_math.expm1(a_val))
+                cleaned[k + "_raw"] = v.detach().clone().fill_(raw)
+                rename.append(k)
+        if rename:
+            print(f"[from_checkpoint] migrated {len(rename)} legacy "
+                  f"`crfm.alpha` keys → `alpha_raw` (inverse-softplus).")
+
+        missing, unexpected = model.load_state_dict(cleaned, strict=False)
+        # In strict mode, only fail if there are *real* missing keys (not the
+        # ones we filtered out, and not the buffers added by thop on the
+        # destination model that we didn't add).
+        if strict:
+            real_missing = [k for k in missing
+                            if not (k.endswith(".total_ops") or k.endswith(".total_params"))]
+            if real_missing:
+                raise RuntimeError(
+                    f"Missing keys when loading {weights_path}: {real_missing[:5]}"
+                    + (f" ... ({len(real_missing)} total)" if len(real_missing) > 5 else "")
+                )
+        model.eval()
+        return model
 
     # ----- Forward --------------------------------------------------------
     def forward(

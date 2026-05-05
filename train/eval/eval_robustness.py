@@ -257,11 +257,11 @@ def main() -> None:
         from train_ds import load_golden as ds_load_golden
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        ckpt   = torch.load(args.weights, map_location=device, weights_only=False)
-        nc     = int(ckpt.get("num_classes", 2))
-        model  = DSYOLOv8m(num_classes=nc).to(device)
-        model.load_state_dict(ckpt["state_dict"])
-        model.eval()
+        # `from_checkpoint` reads variant + fusion from the checkpoint and
+        # filters thop's bookkeeping buffers — works regardless of which
+        # YOLOv8 size (n/s/m/l/x) the model was trained with.
+        model = DSYOLOv8m.from_checkpoint(args.weights, device=device)
+        nc = int(model.nc)
         golden_tensor = ds_load_golden(args.golden, args.imgsz, device)
         ds_context = dict(model=model, golden=golden_tensor, device=device, nc=nc)
     else:
