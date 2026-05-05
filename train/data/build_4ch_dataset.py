@@ -1,4 +1,4 @@
-"""Pre-compute 4-channel (BGR + Diff) images for a YOLO dataset.
+"""Pre-compute 4-channel (RGB + Diff) tensors for a YOLO dataset.
 
 Input layout (standard YOLO dataset):
 
@@ -7,16 +7,23 @@ Input layout (standard YOLO dataset):
         labels/{train,val,test}/*.txt
         golden.jpg
 
-Output layout (saved as 4-channel PNG, plus an updated YAML):
+Output layout:
 
     dataset_rg/
-        images/{train,val,test}/*.png   # (H, W, 4) uint8  channels: BGR + diff
+        images/{train,val,test}/*.jpg   # original source jpg (copied verbatim)
+        images/{train,val,test}/*.npy   # (H, W, 4) uint8  channels: RGB + diff
         labels/{train,val,test}/*.txt   # copied verbatim
-        rg-yolo.yaml                    # includes channels: 4
+        rg-yolo.yaml
 
-Channel order: BGR (OpenCV convention) + grayscale diff as 4th channel.
-Ultralytics loads with cv2.IMREAD_UNCHANGED (4 channels) and converts
-BGR→RGB internally, leaving the diff channel at index 3.
+How Ultralytics loads 4-channel data:
+  BaseDataset builds self.npy_files = [Path(f).with_suffix(".npy") for f in im_files].
+  When loading image i, if the .npy file exists it is loaded with np.load() instead
+  of cv2.imread(), giving all 4 channels directly.  The source .jpg must also be
+  present so that get_img_files() includes the image in the dataset.
+
+Channel order in the .npy: RGB + grayscale diff (index 3).
+This matches YOLOv8 pretrained weight expectations (Ultralytics converts BGR→RGB
+for standard images, so pretrained first-conv weights expect RGB order).
 
 Run::
 
@@ -55,10 +62,13 @@ def process_split(src_split: Path, dst_split: Path, golden: np.ndarray) -> tuple
             # noisier but training does not crash.
             aligned = cv2.resize(cap, (golden.shape[1], golden.shape[0]))
         diff = difference_map(aligned, golden, grayscale=True)
-        # Keep BGR order (OpenCV convention); Ultralytics converts BGR→RGB internally.
-        # Diff map is appended as 4th channel and is not affected by the BGR→RGB swap.
-        bgrd = np.dstack([aligned, diff]).astype(np.uint8)   # (H, W, 4)
-        cv2.imwrite(str(dst_split / (img_path.stem + ".png")), bgrd)
+        rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
+        rgbd = np.dstack([rgb, diff]).astype(np.uint8)        # (H, W, 4) RGB+D
+        # Save 4-channel data as .npy — Ultralytics loads this automatically
+        # when a .npy with the same stem exists alongside the source image.
+        np.save(dst_split / (img_path.stem + ".npy"), rgbd)
+        # Also copy the source jpg so get_img_files() can discover the image.
+        shutil.copy(img_path, dst_split / img_path.name)
         n_ok += 1
     return n_ok, n_fail
 
