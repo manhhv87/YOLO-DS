@@ -251,6 +251,17 @@ def step_soldef_val(dry: bool, force: bool) -> None:
     if not SOLDEF_DATA.exists():
         print(f"[skip] soldef_val — SolDef data.yaml not found: {SOLDEF_DATA}")
         return
+    # Patch data.yaml to use the correct absolute path for the current machine.
+    # The original file may contain a hardcoded Windows path from the dev machine.
+    import yaml as _yaml
+    with SOLDEF_DATA.open() as f:
+        _sd = _yaml.safe_load(f)
+    _correct_path = str(SOLDEF_DATA.parent.resolve()).replace("\\", "/")
+    if str(_sd.get("path", "")).replace("\\", "/") != _correct_path:
+        _sd["path"] = _correct_path
+        with SOLDEF_DATA.open("w") as f:
+            _yaml.safe_dump(_sd, f, sort_keys=False)
+        print(f"[soldef_val] patched data.yaml path → {_correct_path}")
     _train_variant("rgb", SOLDEF_DATA, name=name, dry=dry)
 
 

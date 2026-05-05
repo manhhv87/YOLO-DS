@@ -159,9 +159,14 @@ def _eval_ds_on_tmp(tmp_yaml: Path, ds_context: dict, imgsz: int) -> float:
     with open(tmp_yaml) as f:
         data_yaml = _yaml.safe_load(f)
 
+    # build_yolo_dataset expects an absolute path for the image directory.
+    # The tmp yaml uses relative "images" under "path", so resolve it here.
+    data_path = Path(data_yaml.get("path", str(tmp_yaml.parent)))
+    test_img_abs = str(data_path / data_yaml["test"])
+
     cfg = get_cfg(DEFAULT_CFG, overrides=dict(
         imgsz=imgsz, batch=4, mode="val", rect=False, cache=False))
-    val_ds  = build_yolo_dataset(cfg, data_yaml["test"], 4, data_yaml, mode="val")
+    val_ds  = build_yolo_dataset(cfg, test_img_abs, 4, data_yaml, mode="val")
     val_ldr = DataLoader(val_ds, batch_size=4, shuffle=False,
                          num_workers=0, collate_fn=val_ds.collate_fn)
 
