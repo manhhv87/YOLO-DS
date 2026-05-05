@@ -24,7 +24,7 @@ Available steps (run in this order)
 -------------------------------------
     resplit       Re-split in-house dataset by source image level
     build_rg      Build 4-channel (RGB+diff) dataset for RG-YOLO
-    train_all     Train all 5 Ultralytics variants (rgb, diff-only, stack6, rg-yolo, f-sub)
+    train_all     Train 4 Ultralytics variants (rgb, diff-only, stack6, rg-yolo)
     train_ds      Train DS-YOLO with train_ds.py
     fraction      Data-fraction study (H3): train rgb + ds-yolo at 25/50/100 %
     robustness    Robustness study (H3b): eval rgb + rg-yolo under alignment perturbation
@@ -198,7 +198,9 @@ def step_fraction(dry: bool, force: bool) -> None:
     """Data-fraction study (H3): train rgb + ds-yolo at 25 / 50 / 100 %."""
     data_rgb = DATASET_FIXED / "data.yaml"
 
-    for frac in [0.25, 0.50, 1.0]:
+    # 100% is already covered by step_train_all (rgb) and step_train_ds (ds_yolo)
+    # plot_data_fraction.py reads runs/detect/rgb/ and runs/ds_yolo/ds_yolo/ for 100%
+    for frac in [0.25, 0.50]:
         frac_tag = str(int(frac * 100))
 
         # RGB — Ultralytics always saves to runs/detect/<name>/

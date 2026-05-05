@@ -596,7 +596,9 @@ budget shrinks, supporting H3.
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.92\columnwidth]{data_fraction.pdf}
+    \IfFileExists{figures/data_fraction.pdf}%
+        {\includegraphics[width=0.92\columnwidth]{data_fraction.pdf}}%
+        {\vspace{4cm}\centering\textit{[data\_fraction.pdf -- run step figures]}\vspace{4cm}}
     \caption{mAP@0.5 on the test split as a function of training-set
     fraction. DS-YOLO consistently outperforms the RGB baseline; the
     advantage widens as the training budget shrinks, supporting~H3.}
@@ -673,7 +675,9 @@ and DS-YOLO on a board containing one missing and one shifted component.
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.98\columnwidth]{qual_diff.pdf}
+    \IfFileExists{figures/qual_diff.pdf}%
+        {\includegraphics[width=0.98\columnwidth]{qual_diff.pdf}}%
+        {\vspace{3cm}\centering\textit{[qual\_diff.pdf -- run step figures]}\vspace{3cm}}
     \caption{From left to right: golden reference $\Igolden$, the ORB-aligned
     capture $\Ialn$, and the absolute-difference map $\Idiff$ (visualised
     with a hot colormap). Defect regions light up clearly in $\Idiff$ while
@@ -683,7 +687,9 @@ and DS-YOLO on a board containing one missing and one shifted component.
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.98\columnwidth]{qual_detect.pdf}
+    \IfFileExists{figures/qual_detect.pdf}%
+        {\includegraphics[width=0.98\columnwidth]{qual_detect.pdf}}%
+        {\vspace{3cm}\centering\textit{[qual\_detect.pdf -- run step figures]}\vspace{3cm}}
     \caption{Detection comparison on the same board: YOLOv8m RGB baseline
     (left) vs.\ DS-YOLO (right). Green boxes = OK components; red boxes =
     NG components. DS-YOLO correctly flags a shifted component (red) that
