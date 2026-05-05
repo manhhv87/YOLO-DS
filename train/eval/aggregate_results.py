@@ -44,7 +44,6 @@ PRETTY = {
     "diff-only": "YOLOv8m (Diff-only)",
     "stack6":    "YOLOv8m (Stack6)",
     "f-sub":     "YOLOv8m (F-Sub)",
-    "rg-yolo":   r"RG-YOLO (4-ch input)",
     "ds-yolo":   r"\textbf{DS-YOLO (ours)}",
     # SolDef_A pre-training ablations
     "rgb-soldef":    "YOLOv8m (RGB, SolDef pretrain)",

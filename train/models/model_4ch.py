@@ -13,8 +13,8 @@ Usage::
     from model_4ch import patch_first_conv
 
     yolo = YOLO("yolov8m.pt")
-    patch_first_conv(yolo.model, in_channels=4)
-    yolo.train(data="rg-yolo.yaml", imgsz=1024, epochs=60, batch=4)
+    patch_first_conv(yolo.model, in_channels=6)
+    yolo.train(data="dataset_fixed/data.yaml", imgsz=640, epochs=60, batch=4)
 """
 from __future__ import annotations
 
