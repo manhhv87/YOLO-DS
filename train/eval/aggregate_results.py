@@ -130,11 +130,18 @@ def cmd_main(args: argparse.Namespace) -> None:
     train_ds.py after training.  Falls back to val metrics from results.csv
     with a warning when the JSON is absent.
     """
+    # Mapping of variants trained via train_ds.py (not Ultralytics) to their
+    # run directory names inside args.ds_runs.
+    _DS_VARIANT_TO_DIR = {
+        "ds-yolo":        "ds_yolo",
+        "ds-yolo-soldef": "ds_yolo_soldef",
+        "f-sub":          "f_sub",   # feature-subtraction ablation, also in ds_runs
+    }
+
     print(r"% --- paste below into Table II of paper/main.tex ---")
     for variant in args.variants:
-        if variant in ("ds-yolo", "ds-yolo-soldef"):
-            run_name = "ds_yolo" if variant == "ds-yolo" else "ds_yolo_soldef"
-            run_dir  = Path(args.ds_runs) / run_name
+        if variant in _DS_VARIANT_TO_DIR:
+            run_dir = Path(args.ds_runs) / _DS_VARIANT_TO_DIR[variant]
         else:
             run_dir = Path(args.runs) / variant
 

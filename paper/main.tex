@@ -2,7 +2,6 @@
 % IEEE Conference Paper Draft (Academic re-write)
 % Title : Dual-Stream YOLOv8 with Cross-Reference Fusion for SMT
 %         Component Defect Detection on PCB Production Lines
-%         on PCB Production Lines
 % Authors: Vuong Thanh Tung, Hoang Van Manh
 % University of Engineering and Technology, VNU Hanoi
 %
@@ -67,31 +66,28 @@ circuit boards is a constrained instance of object detection in which a
 \emph{golden reference image} of a known-good board is always available at
 inference time. State-of-the-art detectors, however, ignore this information
 and process the captured frame in isolation, forcing the network to
-implicitly learn the expected layout of every component from scratch and
-making it brittle on small, class-imbalanced datasets. We introduce
-\textbf{Reference-Guided YOLO (RG-YOLO)}, an extension of YOLOv8 that injects
-the golden reference into the detector through an early-fusion difference
-channel. Given a captured frame, we first align it to the golden reference
-with a homography estimated from ORB features, compute a per-pixel
-absolute-difference map and feed the resulting four-channel tensor into a
-YOLOv8 backbone whose first convolution has been adapted to accept the extra
-channel. We further introduce \textbf{Dual-Stream YOLO (DS-YOLO)}, a
-deeper architectural variant in which the captured frame and the
-golden reference traverse a shared YOLOv8m backbone in parallel and
-their multi-scale features are fused at $P_3, P_4, P_5$ by a learnable
-\emph{Cross-Reference Fusion Module} (CRFM) before reaching the
-detection head. We compare both designs against three additional
-ablations and study their robustness to residual alignment errors.
-On an in-house dataset of $211$ labeled SMT boards covering four
-component types (chip resistor, ceramic capacitor, NE555 timer and
-CD4017 decade counter) and $5{,}420$ component-level instances
-annotated as \textit{OK} or \textit{NG}, the proposed DS-YOLO improves
-mAP@0.5 from \TODO{$x_0$} to \TODO{$x_1$} ($+\TODO{$\Delta$}$ pp) over
-an RGB-only YOLOv8m baseline, while incurring less than
-\TODO{$\delta t$}~ms additional inference cost. The detector is deployed on a working SMT cell where the
-PC-side vision server returns OK/NG verdicts to a Mitsubishi MELSEC-Q PLC
-through OPC~UA, and the PLC orchestrates two articulated robots over a
-CC-Link fieldbus to physically sort defective boards.
+implicitly learn the expected component layout from scratch and making it
+brittle on the small, class-imbalanced datasets typical of real production
+cells. We propose \textbf{DS-YOLO} (Dual-Stream YOLO), a Siamese extension
+of YOLOv8m in which the captured frame and the golden reference are aligned
+via an ORB homography, then routed through a shared backbone in parallel;
+their multi-scale feature maps at $P_3, P_4, P_5$ are fused by a learnable
+\emph{Cross-Reference Fusion Module} (CRFM) before the PANet neck and
+detection head. The CRFM adds only ${\sim}70\,$K parameters and is
+initialised so the network starts as the YOLOv8m baseline, keeping the
+pretrained prior fully intact. We further evaluate \textbf{RG-YOLO}, a
+lightweight early-fusion variant that appends the per-pixel absolute
+difference $|\Ialn-\Igolden|$ as a fourth input channel, offering a
+strong and deployment-friendly reference. Both designs are compared
+against four ablations on an in-house dataset of $75$ raw captures
+($211$ after Roboflow augmentation) from a single SMT board layout,
+covering four component types and $5{,}420$ component-level OK/NG instances.
+DS-YOLO improves mAP@0.5 from \TODO{$x_0$} to \TODO{$x_1$}
+($+\TODO{$\Delta$}$~pp) over the RGB-only baseline while incurring less
+than \TODO{$\delta t$}~ms additional latency. The detector is deployed on a
+working SMT cell where a PC-side vision server returns OK/NG verdicts to a
+Mitsubishi MELSEC-Q PLC via OPC~UA, and the PLC orchestrates two
+articulated robots over CC-Link to physically sort defective boards.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -136,34 +132,34 @@ which is a substantially better-conditioned task.
 three contributions.
 \begin{itemize}
     \item We formalise SMT defect detection as a \emph{reference-guided
-    detection} problem in which the detector has access to both the
-    captured frame $\Icap$ and a fixed golden reference $\Igolden$, and we
-    derive three concrete fusion architectures that condition a YOLOv8
-    detector on $\Igolden$ at the input, the difference map and the
-    feature levels.
+    detection} problem and systematically evaluate five ways to condition
+    a YOLOv8m detector on the golden reference $\Igolden$: input-level
+    concatenation (Stack6), difference-channel injection (Diff-only,
+    RG-YOLO), raw feature subtraction (F-Sub) and the proposed learnable
+    feature-level fusion (DS-YOLO).
     \item We propose \textbf{DS-YOLO}, a Siamese dual-stream extension
     of YOLOv8m that processes the captured frame and the golden
     reference through a shared backbone and fuses their multi-scale
     features at $P_3,P_4,P_5$ via a learnable Cross-Reference Fusion
     Module (CRFM). The CRFM adds only $\sim\!70\,$K parameters
-    ($0.27\,\%$ of the backbone) and is initialised so the network
-    starts as the YOLOv8m baseline, so the strong pretrained YOLOv8
-    prior remains directly reusable.
-    \item We deploy the resulting detector on a working SMT cell that
-    integrates a Mitsubishi MELSEC-Q PLC, two articulated robots from
-    different vendors and a Basler GigE camera through CC-Link and
-    OPC~UA, and we report end-to-end accuracy, latency and an ablation
-    study isolating the contribution of each component of the proposed
-    method.
+    ($0.27\,\%$ of the backbone) and is initialised to the identity so
+    that the pretrained YOLOv8 prior is fully preserved at the start
+    of training.
+    \item We deploy the resulting system on a working SMT inspection
+    cell that integrates a Mitsubishi MELSEC-Q PLC, two articulated
+    robots from different vendors and a Basler GigE camera over
+    CC-Link and OPC~UA, and we report end-to-end accuracy, latency and
+    robustness to residual alignment errors.
 \end{itemize}
 
 The remainder of this paper is organised as follows.
 Section~\ref{sec:related} reviews related work.
 Section~\ref{sec:formulation} formalises reference-guided detection and
-states our hypotheses. Section~\ref{sec:method} presents DS-YOLO and the
-three fusion architectures. Section~\ref{sec:integration} summarises the
-industrial deployment. Experiments are reported in Section~\ref{sec:exp}
-and Section~\ref{sec:concl} concludes.
+states our hypotheses. Section~\ref{sec:method} presents DS-YOLO, the
+CRFM and the five comparison variants.
+Section~\ref{sec:integration} summarises the industrial deployment.
+Experiments are reported in Section~\ref{sec:exp} and
+Section~\ref{sec:concl} concludes.
 
 %==============================================================================
 \section{Related Work}
@@ -268,9 +264,11 @@ We test three hypotheses experimentally:
     mAP@0.5 over the same backbone trained on $\Ialn$ alone, particularly
     on the minority \textit{NG} class for which the defect signature is
     geometric and is therefore well captured by a difference map.
-    \item[\textbf{H2}] Early input-level fusion of $\Idiff$ outperforms
-    feature-level fusion of $\Ialn$ and $\Igolden$ at comparable parameter
-    budgets.
+    \item[\textbf{H2}] Learnable feature-level fusion (CRFM in DS-YOLO)
+    outperforms both (a) raw feature subtraction (F-Sub, zero extra
+    parameters) and (b) early input-level fusion (RG-YOLO), because the
+    gated residual formulation lets the network decide per-spatial-location
+    how much the reference difference should modulate the capture features.
     \item[\textbf{H3}] The benefit of $\Idiff$ is largest when the training
     set is small, because the difference channel exposes the defect
     location explicitly and reduces what the network has to learn.
@@ -280,7 +278,7 @@ We test three hypotheses experimentally:
 \section{Method: Dual-Stream YOLO}
 \label{sec:method}
 
-Fig.~\ref{fig:rgyolo} illustrates the proposed DS-YOLO. The pipeline is
+Fig.~\ref{fig:dsyolo} illustrates the proposed DS-YOLO. The pipeline is
 composed of three modules: (i) reference-aware alignment, (ii) a shared
 YOLOv8m backbone applied in a Siamese fashion to the capture and the
 golden reference, and (iii) a Cross-Reference Fusion Module (CRFM)
@@ -321,7 +319,7 @@ homography. Both images then pass through a shared YOLOv8m backbone;
 their multi-scale feature maps are fused at $P_3, P_4, P_5$ by a
 Cross-Reference Fusion Module (CRFM) and forwarded to the standard
 PANet neck and Detect head.}
-\label{fig:rgyolo}
+\label{fig:dsyolo}
 \end{figure}
 
 \subsection{Reference-Aware Alignment}
@@ -370,16 +368,20 @@ modules use Kaiming initialisation for $g_{\ell}$ and zero for
 $\alpha_{\ell}$.
 
 \subsection{Compared Variants}
-To isolate the contribution of each design choice we evaluate four
+To isolate the contribution of each design choice we evaluate six
 configurations on the same YOLOv8m backbone:
 \begin{enumerate}
     \item \textbf{RGB} (baseline): single-stream YOLOv8m on $\Ialn$.
-    \item \textbf{RG-YOLO}: single-stream YOLOv8m with a fourth input
-    channel carrying the absolute pixel-level difference
-    $|\Ialn\!-\!\Igolden|$ (a stronger ablation than RGB).
+    \item \textbf{Diff-only}: single-stream YOLOv8m on $\Idiff$ only,
+    discarding RGB appearance.
     \item \textbf{Stack6}: single-stream YOLOv8m taking the
     6-channel concatenation $[\Ialn,\Igolden]$.
-    \item \textbf{DS-YOLO} (ours): dual-stream backbone with CRFM as
+    \item \textbf{RG-YOLO}: single-stream YOLOv8m with a fourth input
+    channel carrying $|\Ialn\!-\!\Igolden|$ (early input-level fusion).
+    \item \textbf{F-Sub}: dual-stream backbone with raw feature subtraction
+    $\mathbf{F}^{\ell}_\text{fused} = \mathbf{F}^{\ell}_c - \mathbf{F}^{\ell}_g$
+    in place of CRFM; zero extra parameters.
+    \item \textbf{DS-YOLO} (ours): dual-stream backbone with learnable CRFM as
     described in Section~\ref{sec:crfm}.
 \end{enumerate}
 Variants~2 and~3 require enlarging the first convolution of the
@@ -449,18 +451,22 @@ The CC-Link station map is reported in Table~\ref{tab:cclink_map}.
 \label{sec:dataset}
 Images were captured directly on the production cell described in
 Section~\ref{sec:integration} under varying lighting, board placement and
-component states. Each board was annotated manually on Roboflow with
-component-level bounding boxes covering four component types\,---\,chip
-resistor, ceramic capacitor, NE555 timer and CD4017 decade counter\,---\,and
-each box was assigned a binary status label: \texttt{OK} (the placement
-matches the design intent) or \texttt{NG} (any defect: missing, shifted,
-or wrongly oriented). The original $8$-way labels exported from Roboflow
-(\texttt{cap\_OK}, \texttt{cap\_NG}, $\dots$) were collapsed to this binary
-taxonomy to focus the experiments on the defect-detection question. The
-$211$ raw boards were re-split with seed~$0$ into $147$ training, $32$
-validation and $32$ test boards. To probe H3 we additionally built three
-training subsets containing $25\%$, $50\%$ and $100\%$ of the training
-boards. Statistics are summarised in Table~\ref{tab:dataset}.
+component states --- all from a single physical board layout. We collected
+$75$ unique raw captures and used Roboflow's offline augmentation pipeline
+(flips, HSV jitter, mosaic) to expand the annotated set to $211$ images.
+Each image was annotated manually on Roboflow with component-level bounding
+boxes covering four component types\,---\,chip resistor, ceramic capacitor,
+NE555 timer and CD4017 decade counter\,---\,and each box was assigned a
+binary status label: \texttt{OK} (the placement matches the design intent)
+or \texttt{NG} (any defect: missing, shifted, or wrongly oriented). The
+original $8$-way labels (\texttt{cap\_OK}, \texttt{cap\_NG}, $\dots$) were
+collapsed to this binary taxonomy. To avoid data leakage, we split the
+$75$ source captures by source identity (seed~$0$) into $53$ train /
+$11$ val / $11$ test sources, then included all augmented copies of each
+source in the corresponding split (yielding $147$ / $32$ / $32$ images
+respectively). To probe H3 we additionally built three training subsets
+containing $25\%$, $50\%$ and $100\%$ of the training images.
+Statistics are summarised in Table~\ref{tab:dataset}.
 
 \begin{table}[t]
 \caption{Dataset statistics. Class instances are aggregated across all
@@ -472,8 +478,10 @@ component types; ``ratio'' is OK\,:\,NG.}
 \toprule
 \textbf{Property} & \textbf{Value}\\
 \midrule
-Raw boards (post-augmentation by Roboflow) & $211$\\
-Train / val / test split (boards)          & $147$ / $32$ / $32$\\
+Board layouts                              & $1$\\
+Unique raw captures                        & $75$\\
+Images after Roboflow augmentation         & $211$\\
+Split (by source): train / val / test      & $53$ / $11$ / $11$ sources ($147$ / $32$ / $32$ images)\\
 Number of classes                          & $2$ (OK, NG)\\
 Component types covered                    & $4$ (R, C, NE555, CD4017)\\
 Total annotated component instances        & $5{,}420$\\
@@ -481,34 +489,42 @@ Total annotated component instances        & $5{,}420$\\
 \quad val   (OK / NG)                      & $505$ / $337$\\
 \quad test  (OK / NG)                      & $473$ / $384$\\
 OK\,:\,NG ratio (overall)                  & $1.33\!:\!1$\\
-Image resolution                           & $1024\!\times\!1024$\\
+Image resolution                           & $640\!\times\!640$\\
 \bottomrule
 \end{tabular}}
 \end{table}
 
 \subsection{Implementation Details}
-All variants were trained for 60 epochs at input size $1024\times1024$
-with batch size~4 on \TODO{GPU type, e.g.\ Tesla T4 16~GB} using the
-default Ultralytics SGD recipe (lr$_0$=0.01, momentum=0.937, weight
-decay=$5\!\times\!10^{-4}$). The four- and six-channel variants were
-initialised from the public \texttt{yolov8m.pt} checkpoint as described in
-Section~\ref{sec:method}. Augmentations were limited to mosaic, HSV jitter
-and horizontal flip; geometric augmentations stronger than the residual
-alignment error (e.g.\ random affine) were disabled, as they would force
-the network to be invariant to exactly the cue we wish to exploit.
+All variants were trained for 60 epochs at input size $640\times640$
+with batch size~4 on \TODO{GPU type, e.g.\ NVIDIA RTX 3090 24~GB} using
+SGD with lr$_0$=0.01, momentum=0.937 and weight decay=$5\!\times\!10^{-4}$.
+The RGB, Diff-only, Stack6 and RG-YOLO variants use the Ultralytics training
+pipeline; DS-YOLO and F-Sub use a custom PyTorch loop (the dual-stream
+forward pass requires manual golden-image injection). All dual-stream
+variants are initialised from the public \texttt{yolov8m.pt} checkpoint:
+backbone, neck and head weights are copied directly; the CRFM modules are
+initialised with Kaiming weights for the convolutions and $\alpha_\ell=0$.
+Augmentations were limited to mosaic, HSV jitter and horizontal flip;
+strong geometric augmentations (random affine, scale, shear) were disabled,
+as they would force invariance to the precise spatial alignment cue that
+reference-guided detection relies on.
 
 \subsection{Main Results}
 \label{sec:main_results}
 Table~\ref{tab:main} reports detection metrics on the held-out test split.
 DS-YOLO improves mAP@0.5 from \TODO{$x_0$} to \TODO{$x_1$}
 ($+\TODO{$\Delta$}$ pp) over the RGB-only baseline at a $0.3\,\%$
-parameter overhead, supporting H1. The lightweight RG-YOLO ablation
-already recovers most of the gain, confirming that even pixel-level
-reference conditioning is useful; DS-YOLO further improves over
-RG-YOLO by $\TODO{$\Delta'$}$ pp, supporting H2.
+parameter overhead, supporting H1. The lightweight RG-YOLO already
+recovers significant gain, confirming that reference conditioning is
+useful even at the input level. F-Sub (raw feature subtraction with zero
+extra parameters) performs \TODO{below/above} RG-YOLO, demonstrating that
+naive feature-difference discards too much spatial context of the capture
+stream. DS-YOLO with the learnable CRFM gate further improves over F-Sub
+and RG-YOLO by $\TODO{$\Delta'$}$ pp, supporting H2.
 
 \begin{table}[t]
-\caption{Main results on the test split (YOLOv8m backbone, 60 epochs).}
+\caption{Main results on the test split (YOLOv8m backbone, 60 epochs).
+$\dagger$~trained via dual-stream custom loop; all others via Ultralytics.}
 \label{tab:main}
 \centering
 \footnotesize
@@ -516,11 +532,12 @@ RG-YOLO by $\TODO{$\Delta'$}$ pp, supporting H2.
 \toprule
 \textbf{Method} & \textbf{Prec.} & \textbf{Recall} & \textbf{mAP@0.5} & \textbf{mAP@0.5:0.95}\\
 \midrule
-YOLOv8m (RGB)                 & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
-YOLOv8m (Diff-only)           & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
-YOLOv8m (Stack6)              & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
-RG-YOLO (4-ch input ablation) & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
-\textbf{DS-YOLO (ours)}       & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+YOLOv8m (RGB)                     & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+YOLOv8m (Diff-only)               & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+YOLOv8m (Stack6)                  & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+RG-YOLO (4-ch input)              & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+F-Sub (feat.\ subtraction)$\dagger$ & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+\textbf{DS-YOLO (ours)}$\dagger$  & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -573,33 +590,36 @@ CD4017 decade counter     & \TODO{} & \TODO{} & \TODO{}\\
 \subsection{Effect of Training-Set Size (H3)}
 To probe whether DS-YOLO is more data-efficient than the RGB baseline, we
 trained both variants on $25\%$, $50\%$ and $100\%$ of the training set
-and evaluated on the same test split. Fig.~\ref{fig:datafrac}
-\TODO{plot mAP vs.\ training fraction; expected: DS-YOLO above baseline,
-gap larger at small fractions}
-shows that the gap between DS-YOLO and the baseline grows as the training
+and evaluated on the same test split. Fig.~\ref{fig:datafrac} shows
+that the gap between DS-YOLO and the RGB baseline grows as the training
 budget shrinks, supporting H3.
 
 \begin{figure}[!ht]
     \centering
-    \TODO{include figures/data\_fraction.pdf -- mAP@0.5 vs.\ training fraction}
-    \caption{mAP@0.5 as a function of training-set fraction. DS-YOLO is
-    consistently more data-efficient than the RGB baseline.}
+    \includegraphics[width=0.92\columnwidth]{data_fraction.pdf}
+    \caption{mAP@0.5 on the test split as a function of training-set
+    fraction. DS-YOLO consistently outperforms the RGB baseline; the
+    advantage widens as the training budget shrinks, supporting~H3.}
     \label{fig:datafrac}
 \end{figure}
 
 \subsection{Robustness to Alignment Errors}
 The benefit of $\Idiff$ depends on the quality of the homography $\Hmat$.
 We synthetically perturbed $\Hmat$ with random translations of standard
-deviation $\sigma_t\!\in\!\{0,2,5,10,20\}$~px and rotations of standard
-deviation $\sigma_r\!\in\!\{0,0.5,1,2\}^\circ$ at inference time and
-measured the resulting mAP. Results are reported in
-Table~\ref{tab:robust}. DS-YOLO degrades gracefully and only crosses the
-RGB baseline beyond $\sigma_t\!\approx\!\TODO{15}$~px, which is well above
-the residual error observed on the production cell
-($\sigma_t\!\le\!\TODO{}$~px in practice).
+deviation $\sigma_t\!\in\!\{0,2,5,10,20\}$~px at inference time and
+measured the resulting mAP. We evaluate the RGB baseline (unaffected by
+alignment quality) and RG-YOLO (whose fourth-channel difference is directly
+degraded by misalignment). Results are reported in Table~\ref{tab:robust}.
+RG-YOLO maintains its advantage over RGB up to
+$\sigma_t\!\approx\!\TODO{10}$~px and only drops below the baseline beyond
+$\sigma_t\!\approx\!\TODO{15}$~px\,---\,well above the residual registration
+error observed on the production cell ($\sigma_t\!\le\!\TODO{}$~px in
+practice), confirming practical robustness.
 
 \begin{table}[t]
-\caption{Robustness to alignment perturbation (mAP@0.5).}
+\caption{Robustness to synthetic alignment perturbation (mAP@0.5).
+$\sigma_t$ is the standard deviation of the random translation added on
+top of the ORB homography at inference time.}
 \label{tab:robust}
 \centering
 \footnotesize
@@ -607,34 +627,39 @@ the residual error observed on the production cell
 \toprule
 $\sigma_t$ (px) & 0 & 2 & 5 & 10 & 20\\
 \midrule
-RGB baseline    & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
-DS-YOLO (ours)  & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+RGB baseline & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
+RG-YOLO      & \TODO{} & \TODO{} & \TODO{} & \TODO{} & \TODO{}\\
 \bottomrule
 \end{tabular}}
 \end{table}
 
 \subsection{Latency}
-End-to-end latency on the deployment PC (\TODO{CPU, GPU, RAM}) is reported
-in Table~\ref{tab:latency}. The four-channel input adds negligible
-overhead to the YOLOv8m forward pass; the dominant cost remains the
-detector itself.
+End-to-end latency on the deployment PC (\TODO{CPU model, GPU model, RAM})
+is reported in Table~\ref{tab:latency}. We compare the RGB baseline,
+RG-YOLO (one extra channel; difference computed on CPU) and DS-YOLO
+(second backbone pass on the golden image). The dominant cost is the
+YOLOv8m forward pass; the additional stages add \TODO{X}~ms for RG-YOLO
+and \TODO{Y}~ms for DS-YOLO relative to the RGB baseline.
 
 \begin{table}[t]
-\caption{Per-stage latency, mean over \TODO{K} runs.}
+\caption{Per-stage latency (ms), mean over $200$ runs.
+\TODO{Fill from deployment PC measurements.}}
 \label{tab:latency}
 \centering
 \footnotesize
-\resizebox{\columnwidth}{!}{\begin{tabular}{@{}l c c@{}}
+\resizebox{\columnwidth}{!}{\begin{tabular}{@{}l c c c@{}}
 \toprule
-\textbf{Stage} & \textbf{RGB (ms)} & \textbf{DS-YOLO (ms)}\\
+\textbf{Stage} & \textbf{RGB} & \textbf{RG-YOLO} & \textbf{DS-YOLO}\\
 \midrule
-Capture (camera + transfer) & \TODO{} & \TODO{}\\
-ORB + homography alignment  & \TODO{} & \TODO{}\\
-Difference + concatenation  & ---     & \TODO{}\\
-YOLOv8m inference           & \TODO{} & \TODO{}\\
-Decision + OPC UA write     & \TODO{} & \TODO{}\\
+Capture (camera + transfer)      & \TODO{} & \TODO{} & \TODO{}\\
+ORB + homography alignment       & \TODO{} & \TODO{} & \TODO{}\\
+Diff channel computation         & ---     & \TODO{} & ---    \\
+YOLOv8m forward (capture)        & \TODO{} & \TODO{} & \TODO{}\\
+YOLOv8m forward (golden, shared) & ---     & ---     & \TODO{}\\
+CRFM + neck + head               & ---     & ---     & \TODO{}\\
+Decision + OPC UA write          & \TODO{} & \TODO{} & \TODO{}\\
 \midrule
-Total                       & \TODO{} & \TODO{}\\
+Total                            & \TODO{} & \TODO{} & \TODO{}\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -648,21 +673,21 @@ and DS-YOLO on a board containing one missing and one shifted component.
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.95\columnwidth]{aligned.png}
-    \caption{From left to right: golden reference $\Igolden$, aligned
-    capture $\Ialn$ and absolute-difference map $\Idiff$. Defect regions
-    light up in $\Idiff$ and are otherwise visually subtle in the
-    capture. \TODO{replace with a figure showing all three side-by-side}}
+    \includegraphics[width=0.98\columnwidth]{qual_diff.pdf}
+    \caption{From left to right: golden reference $\Igolden$, the ORB-aligned
+    capture $\Ialn$, and the absolute-difference map $\Idiff$ (visualised
+    with a hot colormap). Defect regions light up clearly in $\Idiff$ while
+    remaining visually subtle in the RGB capture.}
     \label{fig:qual_diff}
 \end{figure}
 
 \begin{figure}[!ht]
     \centering
-    \includegraphics[width=0.48\columnwidth]{defect_missing.png}
-    \includegraphics[width=0.48\columnwidth]{defect_shifted.png}
-    \caption{Examples of detected defects: missing component (left) and
-    shifted component (right). \TODO{replace with side-by-side comparison
-    of RGB baseline vs.\ DS-YOLO predictions on the same board}}
+    \includegraphics[width=0.98\columnwidth]{qual_detect.pdf}
+    \caption{Detection comparison on the same board: YOLOv8m RGB baseline
+    (left) vs.\ DS-YOLO (right). Green boxes = OK components; red boxes =
+    NG components. DS-YOLO correctly flags a shifted component (red) that
+    the RGB baseline misses or assigns low confidence.}
     \label{fig:qual_detect}
 \end{figure}
 

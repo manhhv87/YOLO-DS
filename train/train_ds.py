@@ -474,10 +474,13 @@ def main() -> None:
         momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True,
     )
     warmup_epochs = 3
+    import math
     def lr_lambda(e: int) -> float:
         if e < warmup_epochs:
-            return (e + 1) / warmup_epochs          # 0.33 → 0.67 → 1.0
-        return (1 - e / args.epochs) * (1 - 0.01) + 0.01  # cosine-like decay
+            return (e + 1) / warmup_epochs          # linear warmup: 0.33 → 0.67 → 1.0
+        # True cosine decay from 1.0 to 0.01 (matches Ultralytics default).
+        progress = (e - warmup_epochs) / max(args.epochs - warmup_epochs, 1)
+        return 0.01 + 0.5 * (1.0 - 0.01) * (1.0 + math.cos(math.pi * progress))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     # ---- CSV logger ----------------------------------------------------
@@ -542,6 +545,13 @@ def main() -> None:
         print(_hdr % ('Class', 'Images', 'Instances', 'Box(P', 'R', 'mAP50', 'mAP50-95)'))
         print(_row % ('all', n_vi, n_inst,
                       val['precision'], val['recall'], val['map50'], val['map']))
+
+        # Log alpha values (CRFM gate activation diagnostic).
+        _crfm_modules = [("p3", model.crfm_p3), ("p4", model.crfm_p4), ("p5", model.crfm_p5)]
+        _alpha_parts = [f"{tag}={float(m.alpha.item()):.4f}"
+                        for tag, m in _crfm_modules if hasattr(m, "alpha")]
+        if _alpha_parts:
+            print(f"  [CRFM alpha] {', '.join(_alpha_parts)}")
 
         # Log CSV
         with csv_path.open("a", newline="") as f:

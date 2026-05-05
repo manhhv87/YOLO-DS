@@ -272,10 +272,11 @@ def step_tables(dry: bool, _force: bool) -> None:
     print("\n" + "=" * 60)
     print("TABLE II — Main results")
     print("=" * 60)
+    # Order must match Table II in paper: RGB, Diff-only, Stack6, RG-YOLO, F-Sub, DS-YOLO
     run([sys.executable, "eval/aggregate_results.py", "main",
          "--runs",     str(RUNS_DETECT),
          "--ds-runs",  str(RUNS_DS),
-         "--variants", "rgb", "diff-only", "stack6", "f-sub", "rg-yolo", "ds-yolo"],
+         "--variants", "rgb", "diff-only", "stack6", "rg-yolo", "f-sub", "ds-yolo"],
         dry=dry)
 
     print("\n" + "=" * 60)
@@ -311,10 +312,10 @@ def step_tables(dry: bool, _force: bool) -> None:
     print("\n" + "=" * 60)
     print("TABLE V — Robustness")
     print("=" * 60)
+    # Table V compares RGB baseline vs RG-YOLO only (2 rows, matches paper).
     robust_csvs = [
         (RUNS_ROBUST / "rgb.csv",     "RGB baseline"),
         (RUNS_ROBUST / "rg-yolo.csv", "RG-YOLO"),
-        (RUNS_ROBUST / "ds-yolo.csv", "DS-YOLO (ours)"),
     ]
     avail = [(str(p), lbl) for p, lbl in robust_csvs if p.exists()]
     if len(avail) >= 2:
@@ -326,13 +327,49 @@ def step_tables(dry: bool, _force: bool) -> None:
         print("[skip] robustness CSVs not found yet")
 
 
+def step_figures(dry: bool, _force: bool) -> None:
+    """Generate paper figures (requires trained weights)."""
+    data_yaml = DATASET_FIXED / "data.yaml"
+    rgb_w     = RUNS_DETECT / "rgb"    / "weights" / "best.pt"
+    ds_w      = RUNS_DS     / "ds_yolo"/ "weights" / "best.pt"
+
+    print("\n" + "=" * 60)
+    print("FIGURE 2 — Data fraction (H3)")
+    print("=" * 60)
+    run([sys.executable, "eval/plot_data_fraction.py"], dry=dry)
+
+    print("\n" + "=" * 60)
+    print("FIGURE 3 — Golden / Aligned / Diff")
+    print("=" * 60)
+    cmd_fig3 = [sys.executable, "eval/plot_qual_figures.py",
+                "--data",     str(data_yaml),
+                "--golden",   str(GOLDEN),
+                "--imgsz",    str(IMGSZ),
+                "--fig3-only"]
+    run(cmd_fig3, dry=dry)
+
+    print("\n" + "=" * 60)
+    print("FIGURE 4 — RGB vs DS-YOLO detection")
+    print("=" * 60)
+    if exists(rgb_w) and exists(ds_w):
+        cmd_fig4 = [sys.executable, "eval/plot_qual_figures.py",
+                    "--data",     str(data_yaml),
+                    "--golden",   str(GOLDEN),
+                    "--imgsz",    str(IMGSZ),
+                    "--rgb",      str(rgb_w),
+                    "--ds-yolo",  str(ds_w)]
+        run(cmd_fig4, dry=dry)
+    else:
+        print(f"[skip] Figure 4 — weights not found (need rgb + ds_yolo from train_ds)")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 ALL_STEPS = [
     "resplit", "build_rg", "train_all", "train_ds",
-    "fraction", "robustness", "soldef_val", "tables",
+    "fraction", "robustness", "soldef_val", "tables", "figures",
 ]
 
 STEP_FN = {
@@ -344,6 +381,7 @@ STEP_FN = {
     "robustness": step_robustness,
     "soldef_val": step_soldef_val,
     "tables":     step_tables,
+    "figures":    step_figures,
 }
 
 

@@ -174,53 +174,71 @@ BUOC 1: FIX DATA LEAKAGE  [~30 phut]
 BUOC 2: TRAIN CAC VARIANTS  [~3-5 ngay]
 ---------------------------------------
 
-  Chay 5 variant tren dataset_fixed (yolov8m backbone, 60 epochs):
+  Chay tat ca 6 variant tren dataset_fixed (yolov8m backbone, 60 epochs):
 
-  # RGB baseline
+  LUU Y QUAN TRONG:
+    - RGB, Diff-only, RG-YOLO, Stack6  -> train.py (Ultralytics pipeline)
+    - F-Sub, DS-YOLO                   -> train_ds.py (custom dual-stream loop)
+    - f-sub KHONG the chay qua train.py (khong co trong VARIANT_CHANNELS)
+
+  # [2a] RGB baseline — luu vao runs/detect/rgb/
   python train.py --variant rgb --size m \
       --data dataset_fixed/data.yaml \
       --epochs 60 --imgsz 640 --batch 4
 
-  # Diff-only (kenh diff thay vi RGB)
+  # [2b] Diff-only — luu vao runs/detect/diff-only/
   python train.py --variant diff-only --size m \
       --data dataset_fixed/data.yaml \
       --epochs 60 --imgsz 640 --batch 4
 
-  # RG-YOLO (RGB + diff, 4 kenh)
-  python train.py --variant rg-yolo --size m \
-      --data dataset_rg/rg-yolo.yaml \
-      --epochs 60 --imgsz 640 --batch 4
-
-  # Stack6 (RGB + Golden, 6 kenh)
+  # [2c] Stack6 (RGB + Golden, 6 kenh) — luu vao runs/detect/stack6/
   python train.py --variant stack6 --size m \
       --data dataset_fixed/data.yaml \
       --epochs 60 --imgsz 640 --batch 4
 
-  # F-Sub (feature-level fusion)
-  python train.py --variant f-sub --size m \
-      --data dataset_fixed/data.yaml \
+  # [2d] RG-YOLO (RGB + diff, 4 kenh) — luu vao runs/detect/rg-yolo/
+  python train.py --variant rg-yolo --size m \
+      --data dataset_rg/rg-yolo.yaml \
       --epochs 60 --imgsz 640 --batch 4
 
-  # DS-YOLO (Dual-Stream + CRFM — main contribution)
+  # [2e] F-Sub (feature subtraction ablation) — luu vao runs/ds_yolo/f_sub/
+  #      Phai dung train_ds.py --fusion sub, KHONG dung train.py
   python train_ds.py \
       --data     dataset_fixed/data.yaml \
       --golden   datasets/inhouse/golden/golden_ok.bmp \
       --variant  m \
+      --fusion   sub \
+      --epochs   60 --imgsz 640 --batch 4 \
+      --name     f_sub \
+      --save-dir runs/ds_yolo
+
+  # [2f] DS-YOLO (Dual-Stream + CRFM — main contribution) — luu vao runs/ds_yolo/ds_yolo/
+  python train_ds.py \
+      --data     dataset_fixed/data.yaml \
+      --golden   datasets/inhouse/golden/golden_ok.bmp \
+      --variant  m \
+      --fusion   crfm \
       --epochs   60 --imgsz 640 --batch 4 \
       --name     ds_yolo \
       --save-dir runs/ds_yolo
 
-  Metrics can co tu buoc nay:
-    - Precision, Recall, mAP@0.5, mAP@0.5:0.95 moi variant -> Table II
-    - runs/detect/<variant>/results.csv  (train.py variants)
-    - runs/ds_yolo/ds_yolo/results.csv   (DS-YOLO)
+  Metrics can co tu buoc nay (Table II):
+    - runs/detect/rgb/test_results.json
+    - runs/detect/diff-only/test_results.json
+    - runs/detect/stack6/test_results.json
+    - runs/detect/rg-yolo/test_results.json
+    - runs/ds_yolo/f_sub/test_results.json
+    - runs/ds_yolo/ds_yolo/test_results.json
 
 ---------------------------------------
 BUOC 3: DATA FRACTION STUDY  [~1-2 ngay]
 ---------------------------------------
 
-  Chung minh H3: gap lon hon khi data it
+  Chung minh H3: DS-YOLO co loi the khi data it
 
+  LUU Y: 100% khong can train rieng — dung ket qua tu Buoc 2a (rgb) va 2f (ds_yolo)
+
+  # RGB tai 25% va 50% — luu vao runs/detect/rgb_25pct/, rgb_50pct/
   python train.py --variant rgb --size m \
       --data dataset_fixed/data.yaml \
       --epochs 60 --imgsz 640 --batch 4 \
@@ -229,40 +247,46 @@ BUOC 3: DATA FRACTION STUDY  [~1-2 ngay]
       --data dataset_fixed/data.yaml \
       --epochs 60 --imgsz 640 --batch 4 \
       --data-fraction 0.50 --name rgb_50pct
-  python train.py --variant rgb --size m \
-      --data dataset_fixed/data.yaml \
-      --epochs 60 --imgsz 640 --batch 4 \
-      --data-fraction 1.0  --name rgb_100pct
 
+  # DS-YOLO tai 25% va 50% — luu vao runs/fraction/ds_yolo_25pct/, ds_yolo_50pct/
   python train_ds.py \
-      --data          dataset_fixed/data.yaml \
-      --golden        datasets/inhouse/golden/golden_ok.bmp \
-      --variant       m \
-      --epochs        60 --imgsz 640 --batch 4 \
+      --data dataset_fixed/data.yaml \
+      --golden datasets/inhouse/golden/golden_ok.bmp \
+      --variant m --fusion crfm \
+      --epochs 60 --imgsz 640 --batch 4 \
       --data-fraction 0.25 --name ds_yolo_25pct \
-      --save-dir      runs/ds_yolo
-  # (tuong tu cho --data-fraction 0.50 --name ds_yolo_50pct)
-  # (tuong tu cho --data-fraction 1.0  --name ds_yolo_100pct)
+      --save-dir runs/fraction
+  python train_ds.py \
+      --data dataset_fixed/data.yaml \
+      --golden datasets/inhouse/golden/golden_ok.bmp \
+      --variant m --fusion crfm \
+      --epochs 60 --imgsz 640 --batch 4 \
+      --data-fraction 0.50 --name ds_yolo_50pct \
+      --save-dir runs/fraction
 
-  Ket qua -> Figure: data fraction vs mAP -> ung ho H3
+  Ket qua can co (3 diem moi model):
+    - runs/detect/rgb_25pct/test_results.json
+    - runs/detect/rgb_50pct/test_results.json
+    - runs/detect/rgb/test_results.json          (100% — tu Buoc 2a)
+    - runs/fraction/ds_yolo_25pct/test_results.json
+    - runs/fraction/ds_yolo_50pct/test_results.json
+    - runs/ds_yolo/ds_yolo/test_results.json     (100% — tu Buoc 2f)
+  -> Ve Figure: x-axis = fraction (25/50/100%), y-axis = mAP@0.5, 2 duong (RGB vs DS-YOLO)
 
 ---------------------------------------
-BUOC 4: ROBUSTNESS STUDY  [~1-2 ngay]
+BUOC 4: ROBUSTNESS STUDY  [~2-4 gio]
 ---------------------------------------
 
-  Chung minh H3b: DS-YOLO ben vung hon RG-YOLO va RGB khi alignment bi loi
+  Muc tieu: Table V trong paper — RGB vs RG-YOLO duoi alignment perturbation.
 
-  Model can danh gia:
-    - rgb      : baseline, khong dung golden -> khong bi anh huong alignment (diem tham chieu)
-    - rg-yolo  : 4-ch dung diff map -> nhat cam voi alignment error
-    - ds-yolo  : model de xuat, CRFM co the giam thieu anh huong alignment [QUAN TRONG]
-    - diff-only, stack6, f-sub: tuy chon (neu co thoi gian)
+  Ly do chi can 2 model:
+    - rgb     : khong dung golden/diff -> khong bi anh huong alignment (baseline tham chieu)
+    - rg-yolo : diff channel tinh tren anh bi pertub -> nhat cam voi alignment error
+  -> Paper (Table V) da duoc cap nhat chi bao gom 2 model nay.
 
-  LUU Y: eval_robustness.py hien chi ho tro rgb va rg-yolo.
-         Can bo sung ds-yolo vao eval_robustness.py truoc khi chay buoc nay.
-         (Dung train_ds.evaluate() voi perturbed images + golden co dinh)
+  # Can train xong Buoc 2a va 2d truoc.
+  # --imgsz PHAI khop voi imgsz dung khi train (640)
 
-  # --imgsz phai khop voi kich thuoc anh dung khi train
   python eval/eval_robustness.py \
       --variant rgb \
       --weights runs/detect/rgb/weights/best.pt \
@@ -279,17 +303,8 @@ BUOC 4: ROBUSTNESS STUDY  [~1-2 ngay]
       --out     runs/robustness/rg-yolo.csv \
       --imgsz   640
 
-  # ds-yolo: sau khi bo sung ho tro vao eval_robustness.py
-  python eval/eval_robustness.py \
-      --variant ds-yolo \
-      --weights runs/ds_yolo/ds_yolo/weights/best.pt \
-      --data    dataset_fixed/data.yaml \
-      --golden  datasets/inhouse/golden/golden_ok.bmp \
-      --out     runs/robustness/ds-yolo.csv \
-      --imgsz   640
-
-  Ket qua -> Table V (sigma_t=0,2,5,10,20 px vs mAP@0.5)
-  Mong doi: rgb giam it, rg-yolo giam nhieu, ds-yolo giam it hon rg-yolo
+  Ket qua -> Table V (sigma_t = 0, 2, 5, 10, 20 px vs mAP@0.5)
+  Mong doi: rg-yolo > rgb tai sigma_t=0; khoang cach thu hep va dao nguoc khi sigma_t tang
 
 ---------------------------------------
 BUOC 5: SOLDEF_A EXTERNAL VALIDATION  [~1 ngay]
@@ -338,16 +353,17 @@ BUOC 6 (OPTIONAL): SOLDEF_A PRE-TRAINING  [~2-3 ngay]
   Narrative: "Domain-specific pre-training compensates for limited in-house data"
 
 ---------------------------------------
-BUOC 7: TONG HOP SO LIEU  [~1 ngay]
+BUOC 7: TONG HOP SO LIEU  [~2-4 gio]
 ---------------------------------------
 
-  # Table II — so sanh tat ca variant
+  # [7a] Table II — so sanh tat ca 6 variant
+  #      Doc test_results.json (uu tien) hoac results.csv (du phong)
   python eval/aggregate_results.py main \
       --runs     runs/detect \
       --ds-runs  runs/ds_yolo \
-      --variants rgb diff-only stack6 f-sub rg-yolo ds-yolo
+      --variants rgb diff-only stack6 rg-yolo f-sub ds-yolo
 
-  # Table III — per-class OK/NG (can GPU)
+  # [7b] Table III — per-class OK/NG mAP@0.5 (can GPU de chay yolo.val())
   python eval/aggregate_results.py perclass \
       --runs     runs/detect \
       --ds-runs  runs/ds_yolo \
@@ -357,43 +373,98 @@ BUOC 7: TONG HOP SO LIEU  [~1 ngay]
       --imgsz    640 \
       --split    test
 
-  # Table IV — latency (chay tren moi variant can biet latency)
+  # [7c] Table IV — latency (3 cot: RGB | RG-YOLO | DS-YOLO)
+  #      2 dong dau do qua aggregate_results.py latency:
   python eval/aggregate_results.py latency \
-      --weights    runs/detect/rgb/weights/best.pt \
-      --imgsz      640 --channels 3 --runs-count 200
+      --weights runs/detect/rgb/weights/best.pt \
+      --imgsz 640 --channels 3 --runs-count 200
   python eval/aggregate_results.py latency \
-      --weights    runs/detect/rg-yolo/weights/best.pt \
-      --imgsz      640 --channels 4 --runs-count 200
-  # DS-YOLO: do bang tay qua train_ds.evaluate() vi can golden arg
+      --weights runs/detect/rg-yolo/weights/best.pt \
+      --imgsz 640 --channels 4 --runs-count 200
+  #      DS-YOLO: do thu cong bang cach chay 1 epoch evaluate() trong Python:
+  #        import torch
+  #        from models.ds_yolo import DSYOLOv8m
+  #        from train_ds import load_golden, evaluate
+  #        import time, yaml
+  #        from ultralytics.data.build import build_yolo_dataset
+  #        from ultralytics.cfg import get_cfg; from ultralytics.utils import DEFAULT_CFG
+  #        from torch.utils.data import DataLoader
+  #        ckpt = torch.load("runs/ds_yolo/ds_yolo/weights/best.pt", weights_only=False)
+  #        model = DSYOLOv8m(num_classes=2).cuda()
+  #        model.load_state_dict(ckpt["state_dict"])
+  #        golden = load_golden("datasets/inhouse/golden/golden_ok.bmp", 640, "cuda")
+  #        with open("dataset_fixed/data.yaml") as f: dy = yaml.safe_load(f)
+  #        cfg = get_cfg(DEFAULT_CFG, overrides=dict(imgsz=640, batch=4, mode="val"))
+  #        ds = build_yolo_dataset(cfg, dy["test"], 4, dy, mode="val")
+  #        ldr = DataLoader(ds, batch_size=1, collate_fn=ds.collate_fn)
+  #        t0 = time.perf_counter()
+  #        evaluate(model, ldr, golden, "cuda", nc=2)
+  #        print(f"DS-YOLO inference: {(time.perf_counter()-t0)/len(ds)*1000:.1f} ms/img")
 
-  # Table V — robustness (them ds-yolo.csv neu da chay buoc 4 day du)
+  # [7d] Table V — robustness (chi can 2 CSV: rgb + rg-yolo)
   python eval/aggregate_results.py robust \
-      --csvs   runs/robustness/rgb.csv runs/robustness/rg-yolo.csv runs/robustness/ds-yolo.csv \
-      --labels "RGB baseline" "RG-YOLO" "DS-YOLO (ours)"
+      --csvs   runs/robustness/rgb.csv runs/robustness/rg-yolo.csv \
+      --labels "RGB baseline" "RG-YOLO"
 
-  Hoac chay tat ca qua run_all.py:
-    python run_all.py --steps tables
+  # [7e] Hoac chay tat ca qua run_all.py:
+  python run_all.py --steps tables
 
 ---------------------------------------
-BUOC 8: HOAN THIEN PAPER
+BUOC 8: TAO FIGURES  [~30 phut]
 ---------------------------------------
 
-  Dien tat ca TODO trong paper/main.tex:
+  Paper co 4 figures:
+    Fig 1  fig:dsyolo    DS-YOLO pipeline (TikZ) — DA CO SAN trong main.tex
+    Fig 2  fig:datafrac  mAP vs training fraction (H3) — can: data_fraction.pdf
+    Fig 3  fig:qual_diff Golden | Aligned | Diff map — can: qual_diff.pdf
+    Fig 4  fig:qual_detect RGB vs DS-YOLO detection — can: qual_detect.pdf
 
-  [ ] Table I:  Raw=75, Train/Val/Test = 53/11/11 source, ~148 aug train
-  [ ] Table II: Ket qua tu Buoc 2
-  [ ] Table III: Per-class mAP tu Buoc 2
-  [ ] Table IV: Latency do tren PC thuc te (Buoc 7)
-  [ ] Table V:  Robustness tu Buoc 4
-  [ ] Figure:   Data fraction plot tu Buoc 3
-  [ ] GPU spec: Dien GPU dung de train
-  [ ] Email tac gia
+  Tat ca output luu vao paper/figures/
+
+  # [8a] Figure 2 — Data fraction (can xong Buoc 2 + 3)
+  python eval/plot_data_fraction.py
+  # Output: paper/figures/data_fraction.pdf
+
+  # [8b] Figure 3 — Golden/Aligned/Diff (khong can model, can golden + dataset_fixed)
+  python eval/plot_qual_figures.py \
+      --data   dataset_fixed/data.yaml \
+      --golden datasets/inhouse/golden/golden_ok.bmp \
+      --imgsz  640 \
+      --fig3-only
+  # Output: paper/figures/qual_diff.pdf
+
+  # [8c] Figure 4 — RGB vs DS-YOLO detection (can xong Buoc 2a + 2f)
+  python eval/plot_qual_figures.py \
+      --data    dataset_fixed/data.yaml \
+      --golden  datasets/inhouse/golden/golden_ok.bmp \
+      --imgsz   640 \
+      --rgb     runs/detect/rgb/weights/best.pt \
+      --ds-yolo runs/ds_yolo/ds_yolo/weights/best.pt
+  # Output: paper/figures/qual_diff.pdf + paper/figures/qual_detect.pdf
+
+  # [8d] Hoac chay ca 3 figure qua run_all.py:
+  python run_all.py --steps figures
+
+  LUU Y:
+    - Kiem tra Figure 4 sau khi tao: chon dung anh co cau kien NG ro rang
+    - Neu muon dung anh cu the: them --image path/to/test_img.jpg
+    - Figure 2 se bao loi neu chua train fraction variants; chay Buoc 3 truoc
+
+---------------------------------------
+BUOC 9: HOAN THIEN PAPER
+---------------------------------------
+
+  Dien tat ca TODO con lai trong paper/main.tex:
+
+  [ ] Table II: Ket qua tu Buoc 2 (copy paste tu aggregate_results.py main)
+  [ ] Table III: Per-class mAP tu aggregate_results.py perclass
+  [ ] Table IV: Latency do tren PC thuc te (Buoc 7c)
+  [ ] Table V:  Robustness tu Buoc 4 (copy paste tu aggregate_results.py robust)
+  [ ] GPU spec: Dien GPU dung de train (thay TODO trong Implementation Details)
+  [ ] Email tac gia (2 author blocks)
   [ ] Acknowledgment
-
-  Sua ngon ngu ve dataset:
-    Thay: "211 labeled SMT boards"
-    Bang: "75 raw captures of a single SMT board layout, augmented to
-           ~148 training images via offline augmentation"
+  [ ] Gia tri sigma_t crossover trong text robustness (~15 px)
+  [ ] delta_t latency trong abstract va conclusion
 
   Them trich dan con thieu:
   [ ] 2-3 YOLO-for-PCB papers (Section II)

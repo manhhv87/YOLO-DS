@@ -1,215 +1,246 @@
-# Training Code — Reference-Guided YOLO
+# Training Code — DS-YOLO for SMT Defect Detection
 
-All scripts and data needed to train (and re-train) the YOLOv8 detectors
-reported in the conference paper. The UI side lives in
-[`../ui/`](../ui/) and consumes the resulting `best.pt`.
+Toan bo code train va eval cho paper. UI nam o [`../ui/`](../ui/).
 
-## Layout
+## Thu muc
 
 ```
 train/
-├── README.md                this file
-├── requirements.txt
+├── README.md               file nay
+├── run_all.py              chay tat ca buoc tu dong (khuyen dung)
+├── train.py                train RGB / Diff-only / Stack6 / RG-YOLO
+├── train_ds.py             train F-Sub va DS-YOLO (dual-stream loop)
 │
 ├── models/
-│   ├── __init__.py
-│   └── ds_yolo.py           DS-YOLO architecture (CRFM + dual-stream)
+│   ├── ds_yolo.py          kien truc DS-YOLOv8m: backbone + CRFM + neck + head
+│   └── model_4ch.py        patch first Conv2d cua YOLOv8 sang N kenh (RG-YOLO/Stack6)
 │
-├── train_ds.py              train DS-YOLO  (recommended for the paper)
-├── train.py                 train RGB / RG-YOLO / Stack6 / F-Sub baselines
+├── data/
+│   ├── align.py            ORB + RANSAC homography alignment
+│   ├── resplit_inhouse.py  fix data leakage: re-split theo source image level
+│   ├── build_4ch_dataset.py  tao dataset 4-ch (RGB+diff) cho RG-YOLO
+│   ├── convert_soldef_to_yolo.py  chuyen SolDef_A JSON -> YOLO (da xong)
+│   └── remap_to_binary.py  8-class -> 2-class (da xong, khong can chay lai)
 │
-├── align.py                 ORB + homography alignment + diff map
-├── model_4ch.py             patch YOLOv8's first conv to N channels (RG-YOLO)
-├── build_4ch_dataset.py     pre-compute (RGB + diff) tensors (RG-YOLO)
-├── eval_robustness.py       robustness study under H perturbations
-├── aggregate_results.py     emit LaTeX rows for the paper tables
-├── remap_to_binary.py       8-class -> 2-class binary remap + resplit
+├── eval/
+│   ├── eval_robustness.py  Table V: eval rgb+rg-yolo duoi alignment perturbation
+│   └── aggregate_results.py  xuat LaTeX rows cho Table II/III/IV/V
 │
-├── dataset/                  primary in-house dataset (binary OK/NG, with golden)
-│   ├── data.yaml               YOLO config: 2 classes (OK, NG)
-│   ├── binary_class_counts.json
-│   ├── train/{images,labels}/    147 boards
-│   ├── val/{images,labels}/      32 boards
-│   ├── test/{images,labels}/     32 boards
-│   └── golden/                 3 reference images (used by build_4ch_dataset.py)
+├── datasets/
+│   ├── inhouse/
+│   │   ├── leaky/          Roboflow export goc — KHONG DUNG TRUC TIEP
+│   │   └── golden/         golden_ok.bmp, golden2.bmp, golden_ng.png
+│   └── soldef/             SolDef_A da convert sang YOLO (300/64/64)
 │
-├── dataset/SolDef_AI/        SolDef_A raw drop (Labeled/ + Dataset/CS*/R*/V*)
-│   └── ...                     polygon JSON + JPGs (~1.2 GB)
-├── dataset/soldef_yolo/      SolDef_A converted to YOLO bbox (binary OK/NG)
-├── dataset/soldef_yolo_5class/  SolDef_A converted to YOLO bbox (5 classes)
-│
-├── convert_soldef_to_yolo.py  polygon JSON -> YOLO bbox + train/val/test split
-│
-└── runs/                    training output
-    └── baseline_8class/     metrics record of the original 8-class run
-                             (60 epochs, mAP@0.5 = 0.985). Weights live in
-                             ../ui/runs/detect/train/weights/{best,last}.pt
+├── dataset_fixed/          [TU DONG TAO] resplit_inhouse.py output
+├── dataset_rg/             [TU DONG TAO] build_4ch_dataset.py output
+└── runs/                   [TU DONG TAO] training outputs
+    ├── detect/             Ultralytics variants (rgb, diff-only, stack6, rg-yolo)
+    ├── ds_yolo/            DS-YOLO + F-Sub (train_ds.py)
+    ├── fraction/           data-fraction study (25%/50%/100%)
+    └── robustness/         robustness CSVs (eval_robustness.py)
 ```
 
-## Quick re-train (DS-YOLO, recommended)
+---
 
-```
+## Chay nhanh — tat ca tu dong
+
+```bash
 cd train
-pip install -r requirements.txt
 
+# Kiem tra lenh (khong chay that)
+python run_all.py --dry-run
+
+# Chay tat ca tu dau (~3-5 ngay)
+python run_all.py
+
+# Chi chay mot so buoc (neu dataset da co san)
+python run_all.py --steps train_all train_ds fraction robustness soldef_val tables
+```
+
+---
+
+## Chay tung buoc thu cong
+
+### Buoc 1: Chuan bi dataset
+
+```bash
+cd train
+
+# 1a. Fix data leakage: re-split theo source identity
+python data/resplit_inhouse.py \
+    --src       datasets/inhouse/leaky \
+    --dst       dataset_fixed \
+    --val-frac  0.15 \
+    --test-frac 0.15 \
+    --seed      0
+# Ket qua: dataset_fixed/{train,val,test}/{images,labels}/ + data.yaml
+
+# 1b. Tao 4-channel dataset cho RG-YOLO
+python data/build_4ch_dataset.py \
+    --src    dataset_fixed \
+    --dst    dataset_rg \
+    --golden datasets/inhouse/golden/golden_ok.bmp
+# Ket qua: dataset_rg/{train,val,test}/{images,labels}/ + rg-yolo.yaml
+```
+
+### Buoc 2: Train 6 variants (Table II)
+
+**LUU Y**: `f-sub` va `ds-yolo` PHAI dung `train_ds.py`, KHONG dung `train.py`.
+
+```bash
+# [2a] RGB baseline -> runs/detect/rgb/
+python train.py --variant rgb --size m \
+    --data dataset_fixed/data.yaml \
+    --epochs 60 --imgsz 640 --batch 4
+
+# [2b] Diff-only -> runs/detect/diff-only/
+python train.py --variant diff-only --size m \
+    --data dataset_fixed/data.yaml \
+    --epochs 60 --imgsz 640 --batch 4
+
+# [2c] Stack6 (6-ch: RGB+Golden) -> runs/detect/stack6/
+python train.py --variant stack6 --size m \
+    --data dataset_fixed/data.yaml \
+    --epochs 60 --imgsz 640 --batch 4
+
+# [2d] RG-YOLO (4-ch: RGB+Diff) -> runs/detect/rg-yolo/
+python train.py --variant rg-yolo --size m \
+    --data dataset_rg/rg-yolo.yaml \
+    --epochs 60 --imgsz 640 --batch 4
+
+# [2e] F-Sub (feature subtraction ablation) -> runs/ds_yolo/f_sub/
+#      PHAI dung train_ds.py --fusion sub
 python train_ds.py \
-    --data   dataset/data.yaml \
-    --golden dataset/golden/golden_ok.bmp \
-    --pretrained yolov8m.pt \
-    --epochs 60 --imgsz 1024 --batch 4 \
-    --name ds_yolo
+    --data     dataset_fixed/data.yaml \
+    --golden   datasets/inhouse/golden/golden_ok.bmp \
+    --variant  m \
+    --fusion   sub \
+    --epochs   60 --imgsz 640 --batch 4 \
+    --name     f_sub \
+    --save-dir runs/ds_yolo
+
+# [2f] DS-YOLO (main contribution: CRFM) -> runs/ds_yolo/ds_yolo/
+python train_ds.py \
+    --data     dataset_fixed/data.yaml \
+    --golden   datasets/inhouse/golden/golden_ok.bmp \
+    --variant  m \
+    --fusion   crfm \
+    --epochs   60 --imgsz 640 --batch 4 \
+    --name     ds_yolo \
+    --save-dir runs/ds_yolo
 ```
 
-Outputs land at `runs/ds_yolo/weights/best.pt` (selected by validation
-mAP@0.5) and `runs/ds_yolo/weights/last.pt`. Each checkpoint is a plain
-PyTorch dict containing `state_dict`, `num_classes`, `epoch`, `metrics`
-and the training args, so the UI can rebuild the model from it.
+### Buoc 3: Data-fraction study (Figure H3)
 
-### Deploy to UI
+```bash
+# RGB tai 25% / 50% -> runs/detect/rgb_25pct/, rgb_50pct/
+python train.py --variant rgb --size m \
+    --data dataset_fixed/data.yaml --epochs 60 --imgsz 640 --batch 4 \
+    --data-fraction 0.25 --name rgb_25pct
+python train.py --variant rgb --size m \
+    --data dataset_fixed/data.yaml --epochs 60 --imgsz 640 --batch 4 \
+    --data-fraction 0.50 --name rgb_50pct
 
+# DS-YOLO tai 25% / 50% -> runs/fraction/ds_yolo_25pct/, ds_yolo_50pct/
+python train_ds.py \
+    --data dataset_fixed/data.yaml \
+    --golden datasets/inhouse/golden/golden_ok.bmp \
+    --variant m --fusion crfm --epochs 60 --imgsz 640 --batch 4 \
+    --data-fraction 0.25 --name ds_yolo_25pct --save-dir runs/fraction
+python train_ds.py \
+    --data dataset_fixed/data.yaml \
+    --golden datasets/inhouse/golden/golden_ok.bmp \
+    --variant m --fusion crfm --epochs 60 --imgsz 640 --batch 4 \
+    --data-fraction 0.50 --name ds_yolo_50pct --save-dir runs/fraction
+# 100% = Buoc 2f (ds_yolo day du), khong can train lai
 ```
+
+### Buoc 4: Robustness study (Table V)
+
+```bash
+# Can xong Buoc 2a (rgb) va 2d (rg-yolo) truoc
+
+python eval/eval_robustness.py \
+    --variant rgb \
+    --weights runs/detect/rgb/weights/best.pt \
+    --data    dataset_fixed/data.yaml \
+    --golden  datasets/inhouse/golden/golden_ok.bmp \
+    --out     runs/robustness/rgb.csv \
+    --imgsz   640
+
+python eval/eval_robustness.py \
+    --variant rg-yolo \
+    --weights runs/detect/rg-yolo/weights/best.pt \
+    --data    dataset_rg/rg-yolo.yaml \
+    --golden  datasets/inhouse/golden/golden_ok.bmp \
+    --out     runs/robustness/rg-yolo.csv \
+    --imgsz   640
+```
+
+### Buoc 5: External validation tren SolDef_A
+
+```bash
+python train.py --variant rgb --size m \
+    --data   datasets/soldef/data.yaml \
+    --epochs 60 --imgsz 640 --batch 4 \
+    --name   rgb_soldef
+# Ket qua -> runs/detect/rgb_soldef/test_results.json
+```
+
+### Buoc 6: Tong hop so lieu (LaTeX)
+
+```bash
+# Table II
+python eval/aggregate_results.py main \
+    --runs    runs/detect \
+    --ds-runs runs/ds_yolo \
+    --variants rgb diff-only stack6 rg-yolo f-sub ds-yolo
+
+# Table III — per-class OK/NG (can GPU)
+python eval/aggregate_results.py perclass \
+    --runs     runs/detect \
+    --ds-runs  runs/ds_yolo \
+    --variants rgb rg-yolo ds-yolo \
+    --data     dataset_fixed/data.yaml \
+    --golden   datasets/inhouse/golden/golden_ok.bmp \
+    --imgsz    640 --split test
+
+# Table IV — latency (RGB va RG-YOLO)
+python eval/aggregate_results.py latency \
+    --weights runs/detect/rgb/weights/best.pt \
+    --imgsz 640 --channels 3 --runs-count 200
+python eval/aggregate_results.py latency \
+    --weights runs/detect/rg-yolo/weights/best.pt \
+    --imgsz 640 --channels 4 --runs-count 200
+# DS-YOLO latency: do thu cong (xem PLAN.md Buoc 7c)
+
+# Table V — robustness
+python eval/aggregate_results.py robust \
+    --csvs   runs/robustness/rgb.csv runs/robustness/rg-yolo.csv \
+    --labels "RGB baseline" "RG-YOLO"
+```
+
+---
+
+## Deploy lên UI
+
+```bash
 mkdir -p ../ui/runs/ds_yolo/weights
-cp runs/ds_yolo/weights/best.pt ../ui/runs/ds_yolo/weights/best.pt
-cp runs/ds_yolo/weights/last.pt ../ui/runs/ds_yolo/weights/last.pt
+cp runs/ds_yolo/ds_yolo/weights/best.pt ../ui/runs/ds_yolo/weights/best.pt
 
-# In a shell that runs the UI:
+# Chay UI voi DS-YOLO backend
 USE_DS_YOLO=1 python ../ui/main.py
 ```
 
-The UI's `window_camera.py` swaps the legacy 8-class pipeline for the
-DS-YOLO pipeline whenever the environment variable `USE_DS_YOLO=1` is
-set.
+---
 
-## Alternative: train the RGB / RG-YOLO baselines (paper ablations)
+## Luu y ky thuat
 
-```
-cd train
-
-# RGB baseline (single-stream YOLOv8m on the aligned capture)
-python train.py --variant rgb     --data dataset/data.yaml         --name rgb
-
-# RG-YOLO ablation (4-channel input)
-python build_4ch_dataset.py --src dataset --dst dataset_rg \
-    --golden dataset/golden/golden_ok.bmp
-python train.py --variant rg-yolo --data dataset_rg/rg-yolo.yaml --name rg_yolo
-```
-
-## Full RG-YOLO experiment (paper Table II–VI)
-
-```
-cd train
-
-# 1. Build the 4-channel (RGB + diff) dataset.
-python build_4ch_dataset.py \
-    --src dataset --dst dataset_rg \
-    --golden dataset/golden/golden_ok.bmp
-
-# 2. Train all 5 variants (each ~2 h on a Tesla T4)
-python train.py --variant rgb       --data dataset/data.yaml         --name rgb
-python train.py --variant diff-only --data dataset/data.yaml         --name diff_only
-python train.py --variant stack6    --data dataset_stack6/stack6.yaml --name stack6
-python train.py --variant f-sub     --data dataset/data.yaml         --name f_sub
-python train.py --variant rg-yolo   --data dataset_rg/rg-yolo.yaml   --name rg_yolo
-
-# 3. Data-fraction study for H3 (rgb and rg-yolo only).
-python train.py --variant rgb     --data dataset/data.yaml        --name rgb_25  --data-fraction 0.25
-python train.py --variant rgb     --data dataset/data.yaml        --name rgb_50  --data-fraction 0.50
-python train.py --variant rg-yolo --data dataset_rg/rg-yolo.yaml  --name rgyolo_25 --data-fraction 0.25
-python train.py --variant rg-yolo --data dataset_rg/rg-yolo.yaml  --name rgyolo_50 --data-fraction 0.50
-
-# 4. Robustness study for the alignment-perturbation table.
-python eval_robustness.py \
-    --weights runs/detect/rgb/weights/best.pt    --variant rgb     \
-    --data dataset/data.yaml --golden dataset/golden/golden_ok.bmp \
-    --out runs/robustness/rgb.csv
-
-python eval_robustness.py \
-    --weights runs/detect/rg_yolo/weights/best.pt --variant rg-yolo \
-    --data dataset_rg/rg-yolo.yaml --golden dataset/golden/golden_ok.bmp \
-    --out runs/robustness/rg_yolo.csv
-
-# 5. Aggregate all results into LaTeX rows ready to paste into the paper.
-python aggregate_results.py main \
-    --variants rgb diff-only stack6 f-sub rg-yolo \
-    --runs runs/detect
-
-python aggregate_results.py perclass \
-    --variants rgb rg-yolo \
-    --runs runs/detect \
-    --data dataset/data.yaml
-
-python aggregate_results.py latency \
-    --weights runs/detect/rg_yolo/weights/best.pt --channels 4
-```
-
-## Dataset
-
-`dataset/` is a **binary OK/NG** taxonomy obtained by collapsing the
-original 8-class Roboflow export (`cap_OK`, `cap_NG`, ..., `res_NG`)
-through [remap_to_binary.py](remap_to_binary.py). It contains:
-
-- $211$ raw boards covering 4 component types (chip resistor, ceramic
-  capacitor, NE555 timer, CD4017 decade counter)
-- Split $147 / 32 / 32$ (train / val / test) with seed $0$
-- $5{,}420$ component-level instances ($3{,}097$ OK / $2{,}323$ NG)
-
-The original 8-class Roboflow export was removed after the binary
-remap was finalised; if you need to redo the remap (e.g. with a
-different seed or new images), re-export from Roboflow first.
-
-## SolDef_A as a secondary baseline
-
-The public SolDef_A dataset \[Ulger et al.\] is included for an
-independent comparison. It is a *solder-joint* inspection dataset
-(distinct from our component-placement task), but is useful as a
-public reference: it lets a reviewer reproduce a YOLOv8m baseline on a
-publicly available SMT-defect dataset without access to our in-house
-data.
-
-### Convert SolDef_A polygon JSON to YOLO bbox
-
-```
-# Binary OK/NG (good vs anything else)
-python convert_soldef_to_yolo.py \
-    --src dataset/SolDef_AI/Labeled \
-    --dst dataset/soldef_yolo \
-    --mode binary --val-frac 0.15 --test-frac 0.15 --seed 0
-
-# Or 5 classes (good / exc_solder / spike / no_good / poor_solder)
-python convert_soldef_to_yolo.py \
-    --src dataset/SolDef_AI/Labeled \
-    --dst dataset/soldef_yolo_5class \
-    --mode multi --val-frac 0.15 --test-frac 0.15 --seed 0
-```
-
-### Train a baseline YOLOv8m on SolDef_A
-
-```
-python train.py --variant rgb \
-    --data dataset/soldef_yolo/data.yaml \
-    --imgsz 1280 --batch 4 --epochs 60 \
-    --name soldef_baseline
-```
-
-### Why not DS-YOLO on SolDef_A?
-
-The reference-guided paradigm at the heart of DS-YOLO requires a
-*single* golden image per product line. SolDef_A bundles seven
-component setups (CS1-CS7) at three resistor sizes (R0603, R0805,
-R1206) with multiple variants per setup, so no single board layout
-serves as a global reference. We therefore use SolDef_A only for the
-RGB baseline; the DS-YOLO contributions are evaluated on the in-house
-dataset where the reference paradigm applies.
-
-## Existing baseline
-
-`runs/baseline_8class/` keeps the *metrics* (`results.csv`, plots,
-confusion matrices, args) of a YOLOv8m trained for 60 epochs on the
-**original 8-class** taxonomy (precision $0.926$, recall $1.000$,
-mAP@0.5 $0.985$). The actual `best.pt` / `last.pt` are deployed under
-[`../ui/runs/detect/train/weights/`](../ui/runs/detect/train/weights/);
-they were removed from `train/runs/` to avoid duplication.
-
-The paper retrains on the binary 2-class taxonomy, so this baseline is
-not a paper experiment — only a sanity-check that the dataset is
-learnable.
+| Dieu | Chi tiet |
+|------|----------|
+| **f-sub phai dung train_ds.py** | `train.py` khong co variant `f-sub`. Phai dung `train_ds.py --fusion sub` |
+| **imgsz phai la 640** | Tat ca script dung `--imgsz 640`. Khong dung 1024 (lech voi run_all.py) |
+| **golden dung cho in-house** | `golden_ok.bmp` chi dung cho in-house dataset. SolDef_A khong co golden |
+| **Val/Test khong augment** | Chi train split co augmented images; val/test chi dung 1 anh per source |
+| **Uu tien test_results.json** | aggregate_results.py doc `test_results.json` truoc (do tren test split), roi moi doc `results.csv` |
