@@ -45,7 +45,7 @@ HERE = Path(__file__).parent.resolve()
 # ---------------------------------------------------------------------------
 # In-house dataset (1 board, production cell)
 INHOUSE_LEAKY    = HERE / "datasets" / "inhouse" / "leaky"   # original Roboflow export (DO NOT use for experiments)
-GOLDEN           = HERE / "datasets" / "inhouse" / "golden" / "golden_ok.bmp"
+GOLDEN           = HERE / "datasets" / "inhouse" / "golden" / "golden_inhouse.jpg"
 
 # SolDef_A public dataset
 SOLDEF_DATA      = HERE / "datasets" / "soldef" / "data.yaml"

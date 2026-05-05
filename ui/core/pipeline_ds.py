@@ -32,8 +32,12 @@ from core.ds_inference import ds_infer
 # ---------------------------------------------------------------------------
 _BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 _DEFAULT_WEIGHTS = os.path.join(_BASE_DIR, "runs", "ds_yolo", "weights", "best.pt")
-_DEFAULT_GOLDEN = os.path.join(_BASE_DIR, "stored_images", "golden", "golden_ok.bmp")
-_DEFAULT_GOLDEN_ALIGN = os.path.join(_BASE_DIR, "stored_images", "golden", "golden2.bmp")
+# In-domain golden (1024x1024, same camera/lighting as the captures used for
+# training).  Studio shots like the legacy golden_ok.bmp / golden2.bmp differ
+# in lighting and resolution and produce a noisy diff channel — do NOT use
+# them as model input.
+_DEFAULT_GOLDEN = os.path.join(_BASE_DIR, "stored_images", "golden", "golden_inhouse.jpg")
+_DEFAULT_GOLDEN_ALIGN = _DEFAULT_GOLDEN
 
 CLASS_NAMES = ["OK", "NG"]
 
