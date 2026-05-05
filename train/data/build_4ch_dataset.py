@@ -1,4 +1,4 @@
-"""Pre-compute 4-channel (RGB + Diff) tensors for a YOLO dataset.
+"""Pre-compute 4-channel (BGR + Diff) images for a YOLO dataset.
 
 Input layout (standard YOLO dataset):
 
@@ -7,14 +7,16 @@ Input layout (standard YOLO dataset):
         labels/{train,val,test}/*.txt
         golden.jpg
 
-Output layout (saved as .npy alongside the images, plus an updated YAML):
+Output layout (saved as 4-channel PNG, plus an updated YAML):
 
     dataset_rg/
-        images/{train,val,test}/*.npy   # (H, W, 4) uint8
+        images/{train,val,test}/*.png   # (H, W, 4) uint8  channels: BGR + diff
         labels/{train,val,test}/*.txt   # copied verbatim
-        rg-yolo.yaml
+        rg-yolo.yaml                    # includes channels: 4
 
-The detector training script then loads ``.npy`` files instead of ``.jpg``.
+Channel order: BGR (OpenCV convention) + grayscale diff as 4th channel.
+Ultralytics loads with cv2.IMREAD_UNCHANGED (4 channels) and converts
+BGR→RGB internally, leaving the diff channel at index 3.
 
 Run::
 
@@ -53,9 +55,10 @@ def process_split(src_split: Path, dst_split: Path, golden: np.ndarray) -> tuple
             # noisier but training does not crash.
             aligned = cv2.resize(cap, (golden.shape[1], golden.shape[0]))
         diff = difference_map(aligned, golden, grayscale=True)
-        rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
-        rgbd = np.dstack([rgb, diff]).astype(np.uint8)        # (H, W, 4)
-        np.save(dst_split / (img_path.stem + ".npy"), rgbd)
+        # Keep BGR order (OpenCV convention); Ultralytics converts BGR→RGB internally.
+        # Diff map is appended as 4th channel and is not affected by the BGR→RGB swap.
+        bgrd = np.dstack([aligned, diff]).astype(np.uint8)   # (H, W, 4)
+        cv2.imwrite(str(dst_split / (img_path.stem + ".png")), bgrd)
         n_ok += 1
     return n_ok, n_fail
 

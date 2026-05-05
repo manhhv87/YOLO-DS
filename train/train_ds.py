@@ -27,8 +27,10 @@ DS-YOLO --- this avoids re-implementing mAP from scratch.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
+import math
 import time
 from pathlib import Path
 from typing import Optional
@@ -96,6 +98,33 @@ except ImportError:
         return output
 
 from models.ds_yolo import DSYOLOv8m, _LossCompatModel
+
+
+# ---------------------------------------------------------------------------
+# Exponential Moving Average (matches Ultralytics ModelEMA)
+# ---------------------------------------------------------------------------
+class ModelEMA:
+    """EMA copy of model weights for stabler validation metrics.
+
+    Decay ramps from ~0 up to `decay` over the first ~tau updates,
+    identical to Ultralytics: d = decay*(1-exp(-updates/tau)).
+    """
+    def __init__(self, model: torch.nn.Module, decay: float = 0.9999, tau: int = 2000):
+        self.ema = copy.deepcopy(model).eval()
+        for p in self.ema.parameters():
+            p.requires_grad_(False)
+        self.decay = decay
+        self.tau = tau
+        self.updates = 0
+
+    def update(self, model: torch.nn.Module) -> None:
+        self.updates += 1
+        d = self.decay * (1 - math.exp(-self.updates / self.tau))
+        with torch.no_grad():
+            msd = model.state_dict()
+            for k, v in self.ema.state_dict().items():
+                if v.dtype.is_floating_point:
+                    v.mul_(d).add_((1.0 - d) * msd[k].detach())
 
 
 # ---------------------------------------------------------------------------
@@ -469,12 +498,22 @@ def main() -> None:
     golden = load_golden(args.golden, args.imgsz, args.device)
 
     # ---- Optimizer + scheduler -----------------------------------------
+    # Split params into 3 groups (matches Ultralytics): BN+bias (no decay), weights (decay)
+    g_bn, g_bias, g_weights = [], [], []
+    for m in model.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            g_bn.append(m.weight)
+        if hasattr(m, 'bias') and isinstance(m.bias, torch.nn.Parameter):
+            g_bias.append(m.bias)
+        if hasattr(m, 'weight') and isinstance(m.weight, torch.nn.Parameter) \
+                and not isinstance(m, torch.nn.BatchNorm2d):
+            g_weights.append(m.weight)
     optimizer = torch.optim.SGD(
-        model.parameters(), lr=args.lr0,
-        momentum=args.momentum, weight_decay=args.weight_decay, nesterov=True,
+        g_bias + g_bn, lr=args.lr0, momentum=args.momentum, nesterov=True,
     )
+    optimizer.add_param_group({'params': g_weights, 'weight_decay': args.weight_decay})
+
     warmup_epochs = 3
-    import math
     def lr_lambda(e: int) -> float:
         if e < warmup_epochs:
             return (e + 1) / warmup_epochs          # linear warmup: 0.33 → 0.67 → 1.0
@@ -482,6 +521,15 @@ def main() -> None:
         progress = (e - warmup_epochs) / max(args.epochs - warmup_epochs, 1)
         return 0.01 + 0.5 * (1.0 - 0.01) * (1.0 + math.cos(math.pi * progress))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    # Gradient accumulation: simulate nominal batch=64 (matches Ultralytics nbs=64)
+    accumulate = max(1, round(64 / args.batch))
+    # Mixed precision
+    use_amp = (args.device != "cpu") and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    # EMA
+    ema = ModelEMA(model)
+    close_mosaic = 10  # disable mosaic in final N epochs (matches Ultralytics)
 
     # ---- CSV logger ----------------------------------------------------
     csv_path = save_dir / "results.csv"
@@ -504,19 +552,35 @@ def main() -> None:
         n_batches = 0
         n_inst_ep = 0
 
+        # Close mosaic in the final `close_mosaic` epochs (matches Ultralytics)
+        if epoch == args.epochs - close_mosaic:
+            _ds = train_loader.dataset
+            _ds = getattr(_ds, 'dataset', _ds)  # unwrap Subset if needed
+            if hasattr(_ds, 'mosaic'):
+                _ds.mosaic = 0.0
+                print(f"\n[info] Epoch {epoch+1}: mosaic disabled for final {close_mosaic} epochs")
+
         print(_TRAIN_HDR)
+        optimizer.zero_grad()
         pbar_t = tqdm(train_loader, total=len(train_loader),
                       bar_format="{l_bar}{bar:10}{r_bar}")
-        for batch in pbar_t:
+        for i, batch in enumerate(pbar_t):
             imgs = batch["img"].to(args.device).float() / 255.0
             n_inst_ep += int(batch["cls"].shape[0])
-            preds = model(imgs, golden)
-            loss, loss_items = loss_fn(preds, batch)  # loss_items = (box, cls, dfl)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                preds = model(imgs, golden)
+                loss, loss_items = loss_fn(preds, batch)  # loss_items = (box, cls, dfl)
             loss_scalar = loss.sum() if loss.ndim > 0 else loss
-            optimizer.zero_grad()
-            loss_scalar.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-            optimizer.step()
+            scaler.scale(loss_scalar / accumulate).backward()
+
+            if (i + 1) % accumulate == 0 or (i + 1) == len(train_loader):
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                ema.update(model)
+
             running[0] += loss_scalar.detach()
             running[1:] += loss_items.detach()
             n_batches += 1
@@ -534,7 +598,7 @@ def main() -> None:
 
         running /= max(n_batches, 1)
         train_loss, box_l, cls_l, dfl_l = [float(x) for x in running]
-        val = evaluate(model, val_loader, golden, args.device, nc=nc)
+        val = evaluate(ema.ema, val_loader, golden, args.device, nc=nc)
         scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
 
@@ -566,7 +630,7 @@ def main() -> None:
             model_class="DSYOLOv8m",
             fusion=args.fusion,
             num_classes=nc,
-            state_dict=model.state_dict(),
+            state_dict=ema.ema.state_dict(),  # EMA weights (matches Ultralytics best.pt)
             epoch=epoch + 1,
             metrics=val,
             args=vars(args),
