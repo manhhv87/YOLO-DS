@@ -54,6 +54,11 @@ def main() -> None:
     p.add_argument("--name", default=None)
     p.add_argument("--data-fraction", type=float, default=1.0,
                    help="Fraction of training data to use (for the H3 study).")
+    p.add_argument("--mosaic", type=float, default=0.0,
+                   help="Mosaic augmentation probability (0..1). DEFAULT 0.0 "
+                        "because mosaic shrinks already-small SMD components by 4x, "
+                        "and for single-board datasets it scrambles the fixed layout. "
+                        "Override for diverse multi-board datasets.")
     args = p.parse_args()
 
     weights = args.weights or f"yolov8{args.size}.pt"
@@ -61,6 +66,25 @@ def main() -> None:
     yolo = YOLO(weights)
     if in_channels != 3:
         patch_first_conv(yolo.model, in_channels=in_channels)
+
+    # 4-channel and 6-channel variants store information beyond pixel intensity
+    # in the extra channels (diff map, golden RGB).  Photometric augmentation
+    # (HSV jitter) and the default fill value 114 used by mosaic / letterbox
+    # would silently corrupt those extra channels — for the diff channel,
+    # fill=114 looks like a strong fake defect everywhere.  Disable HSV for
+    # multi-channel variants and force mosaic=0 so the diff signal stays
+    # clean.
+    multi_channel = in_channels != 3
+    if multi_channel and args.mosaic > 0:
+        print(f"[warn] --mosaic={args.mosaic} requested but variant has "
+              f"{in_channels} channels: forcing mosaic=0.0 to preserve the "
+              f"extra channel(s).")
+        mosaic_p = 0.0
+    else:
+        mosaic_p = args.mosaic
+    hsv_h = 0.0 if multi_channel else 0.015
+    hsv_s = 0.0 if multi_channel else 0.7
+    hsv_v = 0.0 if multi_channel else 0.4
 
     yolo.train(
         data=args.data,
@@ -76,10 +100,10 @@ def main() -> None:
         scale=0.0,
         shear=0.0,
         perspective=0.0,
-        # Keep mild photometric ones.
-        hsv_h=0.015, hsv_s=0.7, hsv_v=0.4,
+        # Photometric jitter only on plain RGB; otherwise corrupts diff/golden.
+        hsv_h=hsv_h, hsv_s=hsv_s, hsv_v=hsv_v,
         fliplr=0.5,
-        mosaic=1.0,
+        mosaic=mosaic_p,
     )
 
     # ---- Test-set evaluation (unbiased, for paper reporting) ---------------

@@ -47,7 +47,8 @@ from align import align_to_golden, difference_map
 
 def process_split(src_split: Path, dst_split: Path, golden: np.ndarray) -> tuple[int, int]:
     dst_split.mkdir(parents=True, exist_ok=True)
-    n_ok = n_fail = 0
+    n_ok = n_fail = n_align_fail = 0
+    align_inliers = []
     for img_path in sorted(src_split.glob("*.*")):
         if img_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp"}:
             continue
@@ -56,20 +57,33 @@ def process_split(src_split: Path, dst_split: Path, golden: np.ndarray) -> tuple
             n_fail += 1
             continue
         try:
-            aligned, _, _ = align_to_golden(cap, golden)
+            aligned, _, inlier_ratio = align_to_golden(cap, golden)
+            align_inliers.append(float(inlier_ratio))
         except RuntimeError:
-            # Fallback: keep the unaligned capture; difference will be
-            # noisier but training does not crash.
+            # Fallback: keep the unaligned capture.  Track these so the user
+            # knows whether the diff channel is reliable.
             aligned = cv2.resize(cap, (golden.shape[1], golden.shape[0]))
+            n_align_fail += 1
         diff = difference_map(aligned, golden, grayscale=True)
-        rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)
-        rgbd = np.dstack([rgb, diff]).astype(np.uint8)        # (H, W, 4) RGB+D
+        # Channel order in npy: [D, B, G, R]
+        # Ultralytics applies BGR→RGB reversal (im[::-1] on CHW) to loaded npy,
+        # turning [D, B, G, R] → [R, G, B, D] which is what the model expects.
+        diff_ch = diff[..., np.newaxis] if diff.ndim == 2 else diff  # (H, W, 1)
+        dbgr = np.dstack([diff_ch, aligned]).astype(np.uint8)        # (H, W, 4) D+BGR
         # Save 4-channel data as .npy — Ultralytics loads this automatically
         # when a .npy with the same stem exists alongside the source image.
-        np.save(dst_split / (img_path.stem + ".npy"), rgbd)
+        np.save(dst_split / (img_path.stem + ".npy"), dbgr)
         # Also copy the source jpg so get_img_files() can discover the image.
         shutil.copy(img_path, dst_split / img_path.name)
         n_ok += 1
+    if align_inliers:
+        m = float(np.mean(align_inliers))
+        lo = float(np.min(align_inliers))
+        print(f"  alignment inlier-ratio: mean={m:.2f}  min={lo:.2f}  "
+              f"(<0.4 = poor, diff channel is noise)")
+    if n_align_fail:
+        print(f"  WARNING: {n_align_fail} images fell back to no-align "
+              f"(diff channel is unreliable on those)")
     return n_ok, n_fail
 
 

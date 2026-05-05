@@ -153,6 +153,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed",       type=int, default=0)
     p.add_argument("--data-fraction", type=float, default=1.0,
                    help="Fraction of training data to use (for the H3 study).")
+    p.add_argument("--mosaic", type=float, default=0.0,
+                   help="Mosaic prob in [0,1]. DEFAULT 0.0 because mosaic re-tiles 4 "
+                        "captures into 1 frame and breaks the fixed alignment that "
+                        "CRFM relies on. Only enable for diverse multi-board datasets.")
     return p.parse_args()
 
 
@@ -456,7 +460,12 @@ def main() -> None:
     from ultralytics.utils import DEFAULT_CFG
     cfg = get_cfg(DEFAULT_CFG, overrides=dict(
         imgsz=args.imgsz, batch=args.batch, mode="train",
-        rect=False, cache=False, mosaic=1.0, hsv_h=0.015, hsv_s=0.7, hsv_v=0.4,
+        rect=False, cache=False,
+        # CRITICAL: mosaic re-tiles 4 captures into 1 frame, destroying the
+        # fixed geometric alignment between capture and golden that CRFM
+        # depends on.  Set to 0.0 for single-product / fixed-fixture lines.
+        mosaic=args.mosaic,
+        hsv_h=0.015, hsv_s=0.7, hsv_v=0.4,
         flipud=0.0, fliplr=0.5,
         # No strong geometric aug -- it would defeat the alignment we rely on.
         degrees=0.0, translate=0.0, scale=0.0, shear=0.0, perspective=0.0,
