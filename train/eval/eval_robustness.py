@@ -7,13 +7,10 @@ For each translation sigma (sigma_t in pixels) the script:
      the existing alignment, simulating residual mechanical drift.
   3. For the ``rgb`` variant   : saves the perturbed image as a .jpg and
      calls yolo.val() on the temporary dataset.
-  4. For the ``rg-yolo`` variant: also recomputes the 4-ch (RGB+diff) .npy
-     and calls yolo.val() on the perturbed .npy dataset.
+  4. For the ``ds-yolo`` variant: saves the perturbed image and evaluates
+     DS-YOLO with the ORIGINAL (unperturbed) golden — this measures
+     DS-YOLO's robustness advantage from CRFM feature-level fusion.
   5. Reports mAP@0.5 per perturbation level -> Table V of the paper.
-
-The golden image is expected to already be at the canonical resolution
-(1024x1024 after preprocessing).  Test images are assumed to be in that
-same frame (i.e. already aligned; sigma=0 should match the normal val mAP).
 
 Run
 ---
@@ -22,22 +19,22 @@ Run
         --variant rgb \\
         --weights runs/detect/rgb/weights/best.pt \\
         --data    dataset_fixed/data.yaml \\
-        --golden  datasets/inhouse/golden/golden_ok.bmp \\
         --out     runs/robustness/rgb.csv
 
-    # RG-YOLO robustness
+    # DS-YOLO robustness
     python eval/eval_robustness.py \\
-        --variant rg-yolo \\
-        --weights runs/detect/rg-yolo/weights/best.pt \\
-        --data    dataset_rg/rg-yolo.yaml \\
-        --golden  datasets/inhouse/golden/golden_ok.bmp \\
-        --out     runs/robustness/rg-yolo.csv
+        --variant ds-yolo \\
+        --weights runs/ds_yolo/ds_yolo/weights/best.pt \\
+        --data    dataset_fixed/data.yaml \\
+        --golden  datasets/inhouse/golden/golden_inhouse.jpg \\
+        --out     runs/robustness/ds_yolo.csv
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import shutil
+import sys
 import tempfile
 from itertools import product
 from pathlib import Path
@@ -60,20 +57,11 @@ SIGMAS_R = [0.0]                # keep rotation=0 for the table; extend if neede
 def make_perturb_matrix(sigma_t: float, sigma_r: float,
                         rng: np.random.Generator,
                         center: tuple[int, int]) -> np.ndarray:
-    """Return a 3x3 homography that is an identity + small noise.
-
-    Parameters
-    ----------
-    sigma_t : std-dev of translation noise (pixels).
-    sigma_r : std-dev of rotation noise (degrees).
-    rng     : seeded random generator.
-    center  : image centre (cx, cy) used as rotation pivot.
-    """
+    """Return a 3x3 homography that is an identity + small noise."""
     tx, ty = rng.normal(0.0, sigma_t, size=2) if sigma_t > 0 else (0.0, 0.0)
     theta  = np.deg2rad(rng.normal(0.0, sigma_r)) if sigma_r > 0 else 0.0
     cx, cy = float(center[0]), float(center[1])
 
-    # Rotation around image centre + translation.
     c, s = np.cos(theta), np.sin(theta)
     M = np.array([
         [c, -s, cx * (1 - c) + cy * s + tx],
@@ -94,7 +82,7 @@ def perturb_image(img: np.ndarray, M: np.ndarray) -> np.ndarray:
 # Build temp perturbed datasets
 # ---------------------------------------------------------------------------
 
-def _load_golden(golden_path: str, imgsz: int) -> np.ndarray:
+def _load_golden_bgr(golden_path: str, imgsz: int) -> np.ndarray:
     golden = cv2.imread(golden_path, cv2.IMREAD_COLOR)
     if golden is None:
         raise FileNotFoundError(f"Cannot read golden: {golden_path}")
@@ -134,53 +122,7 @@ def build_perturbed_rgb(test_img_dir: Path,
             (lbl_out / (img_path.stem + ".txt")).write_text("", encoding="utf-8")
 
 
-def build_perturbed_rg(test_img_dir: Path,
-                       test_lbl_dir: Path,
-                       tmp_dir: Path,
-                       golden_bgr: np.ndarray,
-                       sigma_t: float,
-                       sigma_r: float,
-                       rng: np.random.Generator,
-                       imgsz: int) -> None:
-    """Write perturbed 4-ch .npy arrays + copied labels into tmp_dir."""
-    img_out = tmp_dir / "images"
-    lbl_out = tmp_dir / "labels"
-    img_out.mkdir(parents=True, exist_ok=True)
-    lbl_out.mkdir(parents=True, exist_ok=True)
-
-    for img_path in sorted(test_img_dir.iterdir()):
-        if img_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".npy"}:
-            continue
-
-        if img_path.suffix.lower() == ".npy":
-            arr = np.load(str(img_path))
-            img = arr[:, :, :3]          # first 3 channels = RGB
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        else:
-            img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-            if img is None:
-                continue
-        img = cv2.resize(img, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
-
-        M = make_perturb_matrix(sigma_t, sigma_r, rng, (imgsz // 2, imgsz // 2))
-        warped = perturb_image(img, M)   # BGR, already in golden's frame (plus perturbation)
-
-        diff = cv2.absdiff(warped, golden_bgr)
-        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-        rgb = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
-        rgbd = np.dstack([rgb, diff_gray]).astype(np.uint8)   # (H, W, 4)
-
-        out_stem = img_path.stem if img_path.suffix != ".npy" else img_path.stem
-        np.save(str(img_out / (out_stem + ".npy")), rgbd)
-
-        lbl = test_lbl_dir / (img_path.stem + ".txt")
-        if lbl.is_file():
-            shutil.copy2(lbl, lbl_out / (img_path.stem + ".txt"))
-        else:
-            (lbl_out / (img_path.stem + ".txt")).write_text("", encoding="utf-8")
-
-
-def write_tmp_yaml(tmp_dir: Path, src_yaml: dict, test_split_dir: Path) -> Path:
+def write_tmp_yaml(tmp_dir: Path, src_yaml: dict) -> Path:
     """Write a minimal data.yaml pointing only to the perturbed test split."""
     d = {
         "path":  str(tmp_dir.resolve()).replace("\\", "/"),
@@ -190,9 +132,6 @@ def write_tmp_yaml(tmp_dir: Path, src_yaml: dict, test_split_dir: Path) -> Path:
         "names": src_yaml.get("names", {0: "OK", 1: "NG"}),
         "nc":    src_yaml.get("nc", 2),
     }
-    # Forward 'channels' key so 4-ch models know the input depth.
-    if "channels" in src_yaml:
-        d["channels"] = src_yaml["channels"]
     out = tmp_dir / "data.yaml"
     with out.open("w") as f:
         yaml.safe_dump(d, f, sort_keys=False)
@@ -200,23 +139,59 @@ def write_tmp_yaml(tmp_dir: Path, src_yaml: dict, test_split_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# DS-YOLO evaluation on a temporary perturbed dataset
+# ---------------------------------------------------------------------------
+
+def _eval_ds_on_tmp(tmp_yaml: Path, ds_context: dict, imgsz: int) -> float:
+    """Evaluate DS-YOLO on the perturbed images using the fixed golden."""
+    import torch
+    from torch.utils.data import DataLoader
+    from ultralytics.data.build import build_yolo_dataset
+    from ultralytics.cfg import get_cfg
+    from ultralytics.utils import DEFAULT_CFG
+
+    here = Path(__file__).parent.parent
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    from train_ds import evaluate as ds_evaluate
+
+    import yaml as _yaml
+    with open(tmp_yaml) as f:
+        data_yaml = _yaml.safe_load(f)
+
+    cfg = get_cfg(DEFAULT_CFG, overrides=dict(
+        imgsz=imgsz, batch=4, mode="val", rect=False, cache=False))
+    val_ds  = build_yolo_dataset(cfg, data_yaml["test"], 4, data_yaml, mode="val")
+    val_ldr = DataLoader(val_ds, batch_size=4, shuffle=False,
+                         num_workers=0, collate_fn=val_ds.collate_fn)
+
+    val_met = ds_evaluate(
+        ds_context["model"],
+        val_ldr,
+        ds_context["golden"],
+        ds_context["device"],
+        nc=ds_context["nc"],
+    )
+    return float(val_met.get("map50", 0.0))
+
+
+# ---------------------------------------------------------------------------
 # Evaluate one (sigma_t, sigma_r) point
 # ---------------------------------------------------------------------------
 
-def eval_one(yolo: YOLO,
+def eval_one(yolo,
              variant: str,
              sigma_t: float,
              sigma_r: float,
              data_yaml_path: Path,
-             golden_bgr: np.ndarray | None,
              imgsz: int,
-             rng: np.random.Generator) -> float:
+             rng: np.random.Generator,
+             ds_context: dict | None = None) -> float:
     """Return mAP@0.5 for the given perturbation level."""
 
     with open(data_yaml_path) as f:
         src_yaml = yaml.safe_load(f)
 
-    # Resolve test image and label dirs from the source YAML.
     base = Path(src_yaml.get("path", str(data_yaml_path.parent)))
     test_rel = src_yaml.get("test", "test/images")
     test_img_dir = base / test_rel
@@ -227,21 +202,16 @@ def eval_one(yolo: YOLO,
 
     with tempfile.TemporaryDirectory(prefix="robustness_") as tmp:
         tmp_dir = Path(tmp)
+        build_perturbed_rgb(test_img_dir, test_lbl_dir, tmp_dir,
+                            sigma_t, sigma_r, rng, imgsz)
+        tmp_yaml = write_tmp_yaml(tmp_dir, src_yaml)
 
-        if variant == "rgb":
-            build_perturbed_rgb(test_img_dir, test_lbl_dir, tmp_dir,
-                                sigma_t, sigma_r, rng, imgsz)
-        elif variant == "rg-yolo":
-            assert golden_bgr is not None
-            build_perturbed_rg(test_img_dir, test_lbl_dir, tmp_dir, golden_bgr,
-                               sigma_t, sigma_r, rng, imgsz)
+        if variant == "ds-yolo":
+            return _eval_ds_on_tmp(tmp_yaml, ds_context, imgsz)
         else:
-            raise ValueError(f"Unsupported variant for robustness eval: {variant}")
-
-        tmp_yaml = write_tmp_yaml(tmp_dir, src_yaml, tmp_dir)
-        metrics = yolo.val(data=str(tmp_yaml), split="test",
-                           imgsz=imgsz, verbose=False)
-        return float(metrics.box.map50)
+            metrics = yolo.val(data=str(tmp_yaml), split="test",
+                               imgsz=imgsz, verbose=False)
+            return float(metrics.box.map50)
 
 
 # ---------------------------------------------------------------------------
@@ -251,14 +221,14 @@ def eval_one(yolo: YOLO,
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--variant",  required=True, choices=["rgb", "rg-yolo"],
+    p.add_argument("--variant",  required=True, choices=["rgb", "ds-yolo"],
                    help="Model variant to evaluate.")
     p.add_argument("--weights",  required=True,
                    help="Path to best.pt checkpoint.")
     p.add_argument("--data",     required=True,
                    help="data.yaml of the dataset the model was trained on.")
     p.add_argument("--golden",   default=None,
-                   help="Golden reference image (required for rg-yolo).")
+                   help="Golden reference image (required for ds-yolo).")
     p.add_argument("--out",      required=True,
                    help="Output CSV path.")
     p.add_argument("--imgsz",    type=int, default=1024)
@@ -269,15 +239,35 @@ def main() -> None:
     p.add_argument("--seed",     type=int, default=0)
     args = p.parse_args()
 
-    if args.variant == "rg-yolo" and args.golden is None:
-        p.error("--golden is required for variant=rg-yolo")
+    if args.variant == "ds-yolo" and args.golden is None:
+        p.error("--golden is required for variant=ds-yolo")
 
-    rng    = np.random.default_rng(args.seed)
-    yolo   = YOLO(args.weights)
-    golden_bgr = (_load_golden(args.golden, args.imgsz)
-                  if args.golden else None)
+    rng = np.random.default_rng(args.seed)
+
+    # Load the model.
+    yolo       = None
+    ds_context = None
+
+    if args.variant == "ds-yolo":
+        import torch
+        here = Path(__file__).parent.parent
+        if str(here) not in sys.path:
+            sys.path.insert(0, str(here))
+        from models.ds_yolo import DSYOLOv8m
+        from train_ds import load_golden as ds_load_golden
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        ckpt   = torch.load(args.weights, map_location=device, weights_only=False)
+        nc     = int(ckpt.get("num_classes", 2))
+        model  = DSYOLOv8m(num_classes=nc).to(device)
+        model.load_state_dict(ckpt["state_dict"])
+        model.eval()
+        golden_tensor = ds_load_golden(args.golden, args.imgsz, device)
+        ds_context = dict(model=model, golden=golden_tensor, device=device, nc=nc)
+    else:
+        yolo = YOLO(args.weights)
+
     data_yaml_path = Path(args.data)
-
     rows: list[dict] = []
     combos = list(product(args.sigmas_t, args.sigmas_r))
     print(f"[robustness] variant={args.variant}  "
@@ -286,7 +276,8 @@ def main() -> None:
     for sigma_t, sigma_r in combos:
         try:
             map50 = eval_one(yolo, args.variant, sigma_t, sigma_r,
-                             data_yaml_path, golden_bgr, args.imgsz, rng)
+                             data_yaml_path, args.imgsz, rng,
+                             ds_context=ds_context)
         except Exception as e:
             print(f"  [WARN] sigma_t={sigma_t} sigma_r={sigma_r} failed: {e}")
             map50 = float("nan")

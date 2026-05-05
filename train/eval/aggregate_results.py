@@ -1,31 +1,31 @@
 """Aggregate training/validation results into LaTeX tables.
 
 Handles two CSV formats:
-  * Ultralytics format  (train.py variants: rgb, diff-only, stack6, f-sub, rg-yolo)
-  * train_ds.py format  (ds-yolo variant)
+  * Ultralytics format  (train.py variants: rgb, diff-only, stack6, f-sub)
+  * train_ds.py format  (ds-yolo, f-sub variants)
 
 Usage::
 
     # Table II — all variants (no GPU needed)
     python aggregate_results.py main \\
         --runs runs/detect \\
-        --variants rgb diff-only stack6 rg-yolo ds-yolo
+        --variants rgb diff-only stack6 f-sub ds-yolo
 
     # Table III — per-class mAP (needs GPU)
     python aggregate_results.py perclass \\
         --runs runs/detect \\
-        --variants rgb rg-yolo ds-yolo \\
+        --variants rgb ds-yolo \\
         --data dataset_fixed/data.yaml
 
     # Latency of a single model
     python aggregate_results.py latency \\
-        --weights runs/detect/rg-yolo/weights/best.pt \\
+        --weights runs/detect/rgb/weights/best.pt \\
         --imgsz 1024 --runs-count 200
 
     # Robustness table (Table V) from eval_robustness.py CSV outputs
     python aggregate_results.py robust \\
-        --csvs runs/robustness/rgb.csv runs/robustness/rg-yolo.csv \\
-        --labels "RGB baseline" "RG-YOLO (ours)"
+        --csvs runs/robustness/rgb.csv runs/robustness/ds_yolo.csv \\
+        --labels "RGB baseline" "DS-YOLO (ours)"
 """
 from __future__ import annotations
 
@@ -308,12 +308,12 @@ def main() -> None:
     pm = sub.add_parser("main", parents=[common],
                         help="Aggregate Table II from results.csv files.")
     pm.add_argument("--variants", nargs="+",
-                    default=["rgb", "diff-only", "stack6", "rg-yolo", "ds-yolo"])
+                    default=["rgb", "diff-only", "stack6", "f-sub", "ds-yolo"])
     pm.set_defaults(func=cmd_main)
 
     pc = sub.add_parser("perclass", parents=[common],
                         help="Build Table III by re-running val.")
-    pc.add_argument("--variants", nargs="+", default=["rgb", "rg-yolo", "ds-yolo"])
+    pc.add_argument("--variants", nargs="+", default=["rgb", "ds-yolo"])
     pc.add_argument("--data",   required=True,
                     help="data.yaml of the dataset used for evaluation.")
     pc.add_argument("--golden", default=None,

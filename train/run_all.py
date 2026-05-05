@@ -12,7 +12,7 @@ Usage
     python run_all.py
 
     # Run only specific steps
-    python run_all.py --steps resplit build_rg train_all
+    python run_all.py --steps resplit train_all
 
     # Re-run even if outputs exist
     python run_all.py --force
@@ -23,11 +23,10 @@ Usage
 Available steps (run in this order)
 -------------------------------------
     resplit       Re-split in-house dataset by source image level
-    build_rg      Build 4-channel (RGB+diff) dataset for RG-YOLO
-    train_all     Train 4 Ultralytics variants (rgb, diff-only, stack6, rg-yolo)
+    train_all     Train 3 Ultralytics variants (rgb, diff-only, stack6)
     train_ds      Train DS-YOLO with train_ds.py
     fraction      Data-fraction study (H3): train rgb + ds-yolo at 25/50/100 %
-    robustness    Robustness study (H3b): eval rgb + rg-yolo under alignment perturbation
+    robustness    Robustness study: eval rgb vs ds-yolo under alignment perturbation
     soldef_val    Train RGB baseline on SolDef_A for external validation
     tables        Aggregate all results into LaTeX table rows
 """
@@ -52,7 +51,6 @@ SOLDEF_DATA      = HERE / "datasets" / "soldef" / "data.yaml"
 
 # Generated datasets (created by scripts below)
 DATASET_FIXED    = HERE / "dataset_fixed"               # resplit_inhouse.py output
-DATASET_RG       = HERE / "dataset_rg"                  # build_4ch_dataset.py output
 
 RUNS_DETECT      = HERE / "runs" / "detect"
 RUNS_DS          = HERE / "runs" / "ds_yolo"
@@ -108,20 +106,6 @@ def step_resplit(dry: bool, force: bool) -> None:
          "--seed", "0"], dry=dry)
 
 
-def step_build_rg(dry: bool, force: bool) -> None:
-    out = DATASET_RG / "rg-yolo.yaml"
-    if not force and exists(out):
-        print(f"[skip] build_rg — {out} exists")
-        return
-    if not DATASET_FIXED.exists():
-        print("[ERROR] dataset_fixed not found — run resplit first")
-        sys.exit(1)
-    run([sys.executable, "data/build_4ch_dataset.py",
-         "--src", str(DATASET_FIXED),
-         "--dst", str(DATASET_RG),
-         "--golden", str(GOLDEN)], dry=dry)
-
-
 def _train_variant(variant: str, data: Path, name: str | None = None,
                    fraction: float = 1.0, extra: list | None = None,
                    dry: bool = False) -> None:
@@ -145,13 +129,11 @@ def _train_variant(variant: str, data: Path, name: str | None = None,
 
 def step_train_all(dry: bool, force: bool) -> None:
     data_rgb = DATASET_FIXED / "data.yaml"
-    data_rg  = DATASET_RG    / "rg-yolo.yaml"
 
     variants_data = [
         ("rgb",       data_rgb),
         ("diff-only", data_rgb),
         ("stack6",    data_rgb),
-        ("rg-yolo",   data_rg),
     ]
     for variant, data in variants_data:
         out = RUNS_DETECT / variant / "weights" / "best.pt"
@@ -230,16 +212,18 @@ def step_fraction(dry: bool, force: bool) -> None:
 
 
 def step_robustness(dry: bool, force: bool) -> None:
-    """Robustness study (H3b): evaluate rgb and rg-yolo under alignment perturbation."""
+    """Robustness study: evaluate rgb vs ds-yolo under alignment perturbation (Table V)."""
     pairs = [
-        ("rgb",    RUNS_DETECT / "rgb"     / "weights" / "best.pt",
-                   DATASET_FIXED / "data.yaml",
-                   RUNS_ROBUST / "rgb.csv"),
-        ("rg-yolo", RUNS_DETECT / "rg-yolo" / "weights" / "best.pt",
-                    DATASET_RG   / "rg-yolo.yaml",
-                    RUNS_ROBUST / "rg-yolo.csv"),
+        ("rgb",     RUNS_DETECT / "rgb"    / "weights" / "best.pt",
+                    DATASET_FIXED / "data.yaml",
+                    RUNS_ROBUST / "rgb.csv",
+                    False),
+        ("ds-yolo", RUNS_DS / "ds_yolo" / "weights" / "best.pt",
+                    DATASET_FIXED / "data.yaml",
+                    RUNS_ROBUST / "ds_yolo.csv",
+                    True),
     ]
-    for variant, weights, data, out in pairs:
+    for variant, weights, data, out, needs_golden in pairs:
         if not force and exists(out):
             print(f"[skip] robustness {variant} — {out} exists")
             continue
@@ -250,9 +234,10 @@ def step_robustness(dry: bool, force: bool) -> None:
                "--variant", variant,
                "--weights", str(weights),
                "--data",    str(data),
-               "--golden",  str(GOLDEN),
                "--imgsz",   str(IMGSZ),
                "--out",     str(out)]
+        if needs_golden:
+            cmd += ["--golden", str(GOLDEN)]
         run(cmd, dry=dry)
 
 
@@ -274,11 +259,11 @@ def step_tables(dry: bool, _force: bool) -> None:
     print("\n" + "=" * 60)
     print("TABLE II — Main results")
     print("=" * 60)
-    # Order must match Table II in paper: RGB, Diff-only, Stack6, RG-YOLO, F-Sub, DS-YOLO
+    # Order must match Table II in paper: RGB, Diff-only, Stack6, F-Sub, DS-YOLO
     run([sys.executable, "eval/aggregate_results.py", "main",
          "--runs",     str(RUNS_DETECT),
          "--ds-runs",  str(RUNS_DS),
-         "--variants", "rgb", "diff-only", "stack6", "rg-yolo", "f-sub", "ds-yolo"],
+         "--variants", "rgb", "diff-only", "stack6", "f-sub", "ds-yolo"],
         dry=dry)
 
     print("\n" + "=" * 60)
@@ -287,7 +272,7 @@ def step_tables(dry: bool, _force: bool) -> None:
     run([sys.executable, "eval/aggregate_results.py", "perclass",
          "--runs",     str(RUNS_DETECT),
          "--ds-runs",  str(RUNS_DS),
-         "--variants", "rgb", "rg-yolo", "ds-yolo",
+         "--variants", "rgb", "ds-yolo",
          "--data",     str(DATASET_FIXED / "data.yaml"),
          "--golden",   str(GOLDEN),
          "--imgsz",    str(IMGSZ),
@@ -297,27 +282,24 @@ def step_tables(dry: bool, _force: bool) -> None:
     print("\n" + "=" * 60)
     print("TABLE IV — Latency")
     print("=" * 60)
-    for name, weights, channels in [
-        ("rgb",    RUNS_DETECT / "rgb"    / "weights" / "best.pt", 3),
-        ("rg-yolo",RUNS_DETECT / "rg-yolo"/ "weights" / "best.pt", 4),
-    ]:
-        if exists(weights):
-            run([sys.executable, "eval/aggregate_results.py", "latency",
-                 "--weights",    str(weights),
-                 "--imgsz",      str(IMGSZ),
-                 "--channels",   str(channels),
-                 "--runs-count", "200"],
-                dry=dry)
-        else:
-            print(f"[skip] latency {name} — weights not found")
+    rgb_weights = RUNS_DETECT / "rgb" / "weights" / "best.pt"
+    if exists(rgb_weights):
+        run([sys.executable, "eval/aggregate_results.py", "latency",
+             "--weights",    str(rgb_weights),
+             "--imgsz",      str(IMGSZ),
+             "--channels",   "3",
+             "--runs-count", "200"],
+            dry=dry)
+    else:
+        print("[skip] latency rgb — weights not found")
 
     print("\n" + "=" * 60)
     print("TABLE V — Robustness")
     print("=" * 60)
-    # Table V compares RGB baseline vs RG-YOLO only (2 rows, matches paper).
+    # Table V compares RGB baseline vs DS-YOLO under alignment perturbation.
     robust_csvs = [
-        (RUNS_ROBUST / "rgb.csv",     "RGB baseline"),
-        (RUNS_ROBUST / "rg-yolo.csv", "RG-YOLO"),
+        (RUNS_ROBUST / "rgb.csv",      "RGB baseline"),
+        (RUNS_ROBUST / "ds_yolo.csv",  r"DS-YOLO (ours)"),
     ]
     avail = [(str(p), lbl) for p, lbl in robust_csvs if p.exists()]
     if len(avail) >= 2:
@@ -370,13 +352,12 @@ def step_figures(dry: bool, _force: bool) -> None:
 # ---------------------------------------------------------------------------
 
 ALL_STEPS = [
-    "resplit", "build_rg", "train_all", "train_ds",
+    "resplit", "train_all", "train_ds",
     "fraction", "robustness", "soldef_val", "tables", "figures",
 ]
 
 STEP_FN = {
     "resplit":    step_resplit,
-    "build_rg":   step_build_rg,
     "train_all":  step_train_all,
     "train_ds":   step_train_ds,
     "fraction":   step_fraction,

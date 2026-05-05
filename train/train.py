@@ -6,10 +6,6 @@ Baseline (RGB)::
 
     python train.py --variant rgb       --data dataset_fixed/data.yaml   --epochs 60
 
-RG-YOLO (RGB + diff, 4-ch)::
-
-    python train.py --variant rg-yolo   --data dataset_rg/rg-yolo.yaml   --epochs 60
-
 Stack6 (RGB + Golden, 6-ch)::
 
     python train.py --variant stack6    --data dataset_fixed/data.yaml   --epochs 60
@@ -34,15 +30,14 @@ from models.model_4ch import patch_first_conv
 VARIANT_CHANNELS = {
     "rgb": 3,
     "diff-only": 3,
-    "rg-yolo": 4,
     "stack6": 6,
-    # f-sub is trained via train_ds.py --fusion sub (dual-stream, not Ultralytics pipeline)
+    # f-sub / ds-yolo are trained via train_ds.py (dual-stream, not Ultralytics pipeline)
 }
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--variant", choices=VARIANT_CHANNELS, required=True)
+    p.add_argument("--variant", choices=list(VARIANT_CHANNELS), required=True)
     p.add_argument("--data", required=True, help="Path to the dataset YAML.")
     p.add_argument("--size",    default="m", choices=["n", "s", "m", "l", "x"],
                    help="YOLOv8 backbone size (n/s/m/l/x). Default: m.")
