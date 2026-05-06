@@ -44,14 +44,14 @@ from pathlib import Path
 # Display names used for the LaTeX rows.
 # ---------------------------------------------------------------------------
 PRETTY = {
-    "rgb":       "YOLOv8m (RGB)",
-    "diff-only": "YOLOv8m (Diff-only)",
-    "stack6":    "YOLOv8m (Stack6)",
-    "f-sub":     "YOLOv8m (F-Sub)",
+    "rgb":       "YOLOv8s (RGB)",
+    "diff-only": "YOLOv8s (Diff-only)",
+    "stack6":    "YOLOv8s (Stack6)",
+    "f-sub":     "YOLOv8s (F-Sub)",
     "ds-yolo":   r"\textbf{DS-YOLO (ours)}",
-    # SolDef_A pre-training ablations
-    "rgb-soldef":    "YOLOv8m (RGB, SolDef pretrain)",
-    "ds-yolo-soldef": r"\textbf{DS-YOLO (SolDef pretrain)}",
+    # SolDef_A pre-training ablations (step_soldef_finetune)
+    "rgb-soldef-pre":     "YOLOv8s (RGB, SolDef pretrain)",
+    "ds-yolo-soldef-pre": r"\textbf{DS-YOLO (SolDef pretrain)}",
 }
 
 CLASS_NAMES = ["OK", "NG"]
@@ -133,18 +133,24 @@ def cmd_main(args: argparse.Namespace) -> None:
     train_ds.py after training.  Falls back to val metrics from results.csv
     with a warning when the JSON is absent.
     """
-    # Mapping of variants trained via train_ds.py (not Ultralytics) to their
-    # run directory names inside args.ds_runs.
+    # Variants trained via train_ds.py → directory name inside args.ds_runs.
     _DS_VARIANT_TO_DIR = {
-        "ds-yolo":        "ds_yolo",
-        "ds-yolo-soldef": "ds_yolo_soldef",
-        "f-sub":          "f_sub",   # feature-subtraction ablation, also in ds_runs
+        "ds-yolo":            "ds_yolo",
+        "ds-yolo-soldef-pre": "ds_yolo_soldef_pre",
+        "f-sub":              "f_sub",
+    }
+    # Ultralytics variants whose directory name differs from the variant tag
+    # (hyphens in tag vs underscores on disk, or custom --name used in training).
+    _DETECT_VARIANT_TO_DIR = {
+        "rgb-soldef-pre": "rgb_soldef_pre",
     }
 
     print(r"% --- paste below into Table II of paper/main.tex ---")
     for variant in args.variants:
         if variant in _DS_VARIANT_TO_DIR:
             run_dir = Path(args.ds_runs) / _DS_VARIANT_TO_DIR[variant]
+        elif variant in _DETECT_VARIANT_TO_DIR:
+            run_dir = Path(args.runs) / _DETECT_VARIANT_TO_DIR[variant]
         else:
             run_dir = Path(args.runs) / variant
 
@@ -195,9 +201,10 @@ def cmd_perclass(args: argparse.Namespace) -> None:
     rows: dict[str, dict] = {v: {} for v in args.variants}
 
     for variant in args.variants:
-        if variant in ("ds-yolo", "ds-yolo-soldef"):
+        if variant in ("ds-yolo", "ds-yolo-soldef-pre"):
             # --- DS-YOLO path -------------------------------------------
-            run_name = "ds_yolo" if variant == "ds-yolo" else "ds_yolo_soldef"
+            _ds_perclass_dir = {"ds-yolo": "ds_yolo", "ds-yolo-soldef-pre": "ds_yolo_soldef_pre"}
+            run_name = _ds_perclass_dir[variant]
             weights  = _Path(args.ds_runs) / run_name / "weights" / "best.pt"
             if not weights.is_file():
                 print(f"% [missing] {weights}")

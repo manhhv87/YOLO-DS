@@ -57,11 +57,30 @@ RUNS_DS          = HERE / "runs" / "ds_yolo"
 RUNS_ROBUST      = HERE / "runs" / "robustness"
 RUNS_FRACTION    = HERE / "runs" / "fraction"
 
-# Training hyper-parameters (match paper Section VI-B)
-EPOCHS   = 60
+# Training hyper-parameters (match paper Section VI-B and the actual checkpoints
+# under runs/).  Override at runtime via --epochs / --imgsz / --batch / --size.
+EPOCHS   = 100
 IMGSZ    = 640
 BATCH    = 4
-SIZE     = "m"
+SIZE     = "s"
+
+# DS-YOLO-specific defaults:
+#   FLIPLR=0.5: synced horizontal flip on capture, golden and bboxes (matches
+#               the RGB baseline's fliplr=0.5 default — applied in train_ds.py
+#               training loop, not via Ultralytics' YOLODataset).
+#   NO_GRAD_GOLDEN=True: golden backbone pass runs under torch.no_grad() so its
+#               activations are not retained for backprop.  Halves training-time
+#               GPU memory at no quality cost.
+#   ERASING=0.4: random erasing on capture images only (golden unchanged so
+#               CRFM alignment is preserved). Matches Ultralytics default for
+#               RGB baseline — ensures fair comparison.
+FLIPLR         = "0.5"
+NO_GRAD_GOLDEN = True
+ERASING        = "0.4"
+# FREEZE_CRFM: freeze CRFM for the first 70 % of epochs so DFL converges
+# like the RGB baseline before CRFM learning starts (phase-1/2 training).
+# Set to 0 to disable (single-phase training).
+FREEZE_CRFM_FRAC = 0.70
 
 
 # ---------------------------------------------------------------------------
@@ -144,9 +163,15 @@ def step_train_all(dry: bool, force: bool) -> None:
 
 
 def _train_ds(name: str, fusion: str, dry: bool,
+              save_dir: Path | None = None,
+              data_fraction: float = 1.0,
               extra: list | None = None) -> None:
-    """Train one DS-YOLO variant (fusion=crfm or sub) via train_ds.py."""
-    out = RUNS_DS / name / "weights" / "best.pt"
+    """Train one DS-YOLO variant (fusion=crfm or sub) via train_ds.py.
+
+    Always passes ``--fliplr FLIPLR`` and ``--no-grad-golden`` so the run
+    matches the paper's intended setup (synced flip, ~50 % less training
+    GPU memory).  Override by appending to ``extra``.
+    """
     cmd = [sys.executable, "train_ds.py",
            "--data",     str(DATASET_FIXED / "data.yaml"),
            "--golden",   str(GOLDEN),
@@ -155,8 +180,16 @@ def _train_ds(name: str, fusion: str, dry: bool,
            "--epochs",   str(EPOCHS),
            "--imgsz",    str(IMGSZ),
            "--batch",    str(BATCH),
+           "--fliplr",   FLIPLR,
            "--name",     name,
-           "--save-dir", str(RUNS_DS)]
+           "--save-dir", str(save_dir or RUNS_DS)]
+    if NO_GRAD_GOLDEN:
+        cmd.append("--no-grad-golden")
+    cmd += ["--erasing", ERASING]
+    if FREEZE_CRFM_FRAC > 0:
+        cmd += ["--freeze-crfm", str(int(FREEZE_CRFM_FRAC * EPOCHS))]
+    if data_fraction < 1.0:
+        cmd += ["--data-fraction", str(data_fraction)]
     if extra:
         cmd += extra
     run(cmd, dry=dry)
@@ -197,16 +230,8 @@ def step_fraction(dry: bool, force: bool) -> None:
         name_ds = f"ds_yolo_{frac_tag}pct"
         out_ds  = RUNS_FRACTION / name_ds / "weights" / "best.pt"
         if force or not exists(out_ds):
-            run([sys.executable, "train_ds.py",
-                 "--data",          str(data_rgb),
-                 "--golden",        str(GOLDEN),
-                 "--variant",       SIZE,
-                 "--epochs",        str(EPOCHS),
-                 "--imgsz",         str(IMGSZ),
-                 "--batch",         str(BATCH),
-                 "--name",          name_ds,
-                 "--save-dir",      str(RUNS_FRACTION),
-                 "--data-fraction", str(frac)], dry=dry)
+            _train_ds(name_ds, fusion="crfm", dry=dry,
+                      save_dir=RUNS_FRACTION, data_fraction=frac)
         else:
             print(f"[skip] fraction ds-yolo {frac_tag}% — {out_ds} exists")
 
@@ -261,8 +286,50 @@ def step_soldef_val(dry: bool, force: bool) -> None:
         _sd["path"] = _correct_path
         with SOLDEF_DATA.open("w") as f:
             _yaml.safe_dump(_sd, f, sort_keys=False)
-        print(f"[soldef_val] patched data.yaml path → {_correct_path}")
-    _train_variant("rgb", SOLDEF_DATA, name=name, dry=dry)
+        print(f"[soldef_val] patched data.yaml path -> {_correct_path}")
+    # SolDef has multiple board layouts and NO golden reference, so the
+    # alignment-preserving constraints used for the in-house dataset don't
+    # apply.  --full-aug flips mosaic / translate / scale to YOLOv8 defaults.
+    _train_variant("rgb", SOLDEF_DATA, name=name, dry=dry,
+                   extra=["--full-aug"])
+
+
+def step_soldef_finetune(dry: bool, force: bool) -> None:
+    """Domain-specific pretraining ablation (Table II extension).
+
+    Reuses the RGB-on-SolDef checkpoint produced by step_soldef_val as
+    initialisation, then fine-tunes BOTH the RGB baseline and DS-YOLO on
+    the in-house dataset for another EPOCHS epochs.
+
+    Outputs (added to Table II via aggregate_results.py main):
+      runs/detect/rgb_soldef_pre/             (variant tag: rgb-soldef-pre)
+      runs/ds_yolo/ds_yolo_soldef_pre/        (variant tag: ds-yolo-soldef-pre)
+    """
+    pretrain_w = RUNS_DETECT / "rgb_soldef" / "weights" / "best.pt"
+    if not pretrain_w.is_file():
+        print(f"[skip] soldef_finetune -- pretrain weights not found: "
+              f"{pretrain_w} (run step soldef_val first)")
+        return
+
+    data_inhouse = DATASET_FIXED / "data.yaml"
+
+    # --- (a) RGB fine-tuned from SolDef pretrain --------------------------
+    name_rgb = "rgb_soldef_pre"
+    out_rgb  = RUNS_DETECT / name_rgb / "weights" / "best.pt"
+    if force or not exists(out_rgb):
+        _train_variant("rgb", data_inhouse, name=name_rgb, dry=dry,
+                       extra=["--weights", str(pretrain_w)])
+    else:
+        print(f"[skip] soldef_finetune rgb -- {out_rgb} exists")
+
+    # --- (b) DS-YOLO fine-tuned from SolDef pretrain ----------------------
+    name_ds = "ds_yolo_soldef_pre"
+    out_ds  = RUNS_DS / name_ds / "weights" / "best.pt"
+    if force or not exists(out_ds):
+        _train_ds(name_ds, fusion="crfm", dry=dry,
+                  extra=["--pretrained", str(pretrain_w)])
+    else:
+        print(f"[skip] soldef_finetune ds-yolo -- {out_ds} exists")
 
 
 def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for uniform calling convention; tables always re-run
@@ -270,11 +337,17 @@ def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for
     print("\n" + "=" * 60)
     print("TABLE II — Main results")
     print("=" * 60)
-    # Order must match Table II in paper: RGB, Diff-only, Stack6, F-Sub, DS-YOLO
+    # Order must match Table II in paper.  SolDef-pretrain rows are appended
+    # only if their checkpoints exist (step_soldef_finetune has run).
+    table2_variants = ["rgb", "diff-only", "stack6", "f-sub", "ds-yolo"]
+    if (RUNS_DETECT / "rgb_soldef_pre" / "weights" / "best.pt").is_file():
+        table2_variants.append("rgb-soldef-pre")
+    if (RUNS_DS / "ds_yolo_soldef_pre" / "weights" / "best.pt").is_file():
+        table2_variants.append("ds-yolo-soldef-pre")
     run([sys.executable, "eval/aggregate_results.py", "main",
          "--runs",     str(RUNS_DETECT),
          "--ds-runs",  str(RUNS_DS),
-         "--variants", "rgb", "diff-only", "stack6", "f-sub", "ds-yolo"],
+         "--variants", *table2_variants],
         dry=dry)
 
     print("\n" + "=" * 60)
@@ -364,18 +437,20 @@ def step_figures(dry: bool, force: bool = False) -> None:  # `force` accepted fo
 
 ALL_STEPS = [
     "resplit", "train_all", "train_ds",
-    "fraction", "robustness", "soldef_val", "tables", "figures",
+    "fraction", "robustness", "soldef_val", "soldef_finetune",
+    "tables", "figures",
 ]
 
 STEP_FN = {
-    "resplit":    step_resplit,
-    "train_all":  step_train_all,
-    "train_ds":   step_train_ds,
-    "fraction":   step_fraction,
-    "robustness": step_robustness,
-    "soldef_val": step_soldef_val,
-    "tables":     step_tables,
-    "figures":    step_figures,
+    "resplit":          step_resplit,
+    "train_all":        step_train_all,
+    "train_ds":         step_train_ds,
+    "fraction":         step_fraction,
+    "robustness":       step_robustness,
+    "soldef_val":       step_soldef_val,
+    "soldef_finetune":  step_soldef_finetune,
+    "tables":           step_tables,
+    "figures":          step_figures,
 }
 
 

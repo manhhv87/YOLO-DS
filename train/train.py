@@ -54,7 +54,28 @@ def main() -> None:
                         "because mosaic shrinks already-small SMD components by 4x, "
                         "and for single-board datasets it scrambles the fixed layout. "
                         "Override for diverse multi-board datasets.")
+    # Geometric augmentations.  For the in-house single-board scenario these
+    # are kept at 0.0 so capture↔golden alignment is preserved.  For datasets
+    # with multiple board layouts (e.g. SolDef_A) and no golden reference
+    # they should be enabled — pass ``--full-aug`` from run_all.py to flip
+    # them all to the standard YOLOv8 defaults in one shot.
+    p.add_argument("--degrees",     type=float, default=0.0)
+    p.add_argument("--translate",   type=float, default=0.0)
+    p.add_argument("--scale",       type=float, default=0.0)
+    p.add_argument("--shear",       type=float, default=0.0)
+    p.add_argument("--perspective", type=float, default=0.0)
+    p.add_argument("--full-aug", action="store_true",
+                   help="Use Ultralytics default augmentation (mosaic=1.0, "
+                        "translate=0.1, scale=0.5).  Only for datasets with "
+                        "multiple board layouts and no golden reference (e.g. "
+                        "SolDef_A external validation).")
     args = p.parse_args()
+    if args.full_aug:
+        # Override only flags the user did NOT explicitly pass.  Standard
+        # YOLOv8 defaults from ultralytics/cfg/default.yaml.
+        if args.mosaic    == 0.0: args.mosaic    = 1.0
+        if args.translate == 0.0: args.translate = 0.1
+        if args.scale     == 0.0: args.scale     = 0.5
 
     weights = args.weights or f"yolov8{args.size}.pt"
     in_channels = VARIANT_CHANNELS[args.variant]
@@ -88,13 +109,13 @@ def main() -> None:
         batch=args.batch,
         name=args.name or args.variant,
         fraction=args.data_fraction,
-        # Disable strong geometric augmentations: they would force invariance
-        # to exactly the cue we want to exploit.
-        degrees=0.0,
-        translate=0.0,
-        scale=0.0,
-        shear=0.0,
-        perspective=0.0,
+        # Geometric augmentations (default 0.0 for the in-house alignment
+        # scenario; --full-aug raises them to YOLOv8 defaults for SolDef_A).
+        degrees=args.degrees,
+        translate=args.translate,
+        scale=args.scale,
+        shear=args.shear,
+        perspective=args.perspective,
         # Photometric jitter only on plain RGB; otherwise corrupts diff/golden.
         hsv_h=hsv_h, hsv_s=hsv_s, hsv_v=hsv_v,
         fliplr=0.5,

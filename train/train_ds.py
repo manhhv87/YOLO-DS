@@ -134,14 +134,15 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--data",       required=True, help="Path to YOLO dataset YAML.")
     p.add_argument("--golden",     required=True, help="Path to golden reference image.")
-    p.add_argument("--variant",    default="m", choices=["n", "s", "m", "l", "x"],
-                   help="YOLOv8 variant (n/s/m/l/x). Default: m.")
+    p.add_argument("--variant",    default="s", choices=["n", "s", "m", "l", "x"],
+                   help="YOLOv8 variant (n/s/m/l/x). Default: s "
+                        "(matches the YOLOv8s baselines used in the paper's Table II).")
     p.add_argument("--fusion",     default="crfm", choices=["crfm", "sub"],
                    help="Fusion type: crfm=DS-YOLO, sub=F-Sub ablation. Default: crfm.")
     p.add_argument("--pretrained", default=None,
                    help="Pretrained weights path. Default: yolov8{variant}.pt")
-    p.add_argument("--epochs",     type=int, default=60)
-    p.add_argument("--imgsz",      type=int, default=1024)
+    p.add_argument("--epochs",     type=int, default=100)
+    p.add_argument("--imgsz",      type=int, default=640)
     p.add_argument("--batch",      type=int, default=4)
     p.add_argument("--workers",    type=int, default=2)
     p.add_argument("--lr0",        type=float, default=0.01)
@@ -157,7 +158,63 @@ def parse_args() -> argparse.Namespace:
                    help="Mosaic prob in [0,1]. DEFAULT 0.0 because mosaic re-tiles 4 "
                         "captures into 1 frame and breaks the fixed alignment that "
                         "CRFM relies on. Only enable for diverse multi-board datasets.")
+    p.add_argument("--fliplr", type=float, default=0.5,
+                   help="Synced horizontal-flip probability in [0,1]. Implemented in "
+                        "the training loop so capture, golden and bboxes are flipped "
+                        "TOGETHER (Ultralytics' YOLODataset can only flip the capture "
+                        "and would break CRFM alignment). 0.5 matches the RGB baseline. "
+                        "Set to 0.0 to disable.")
+    p.add_argument("--no-grad-golden", dest="no_grad_golden", action="store_true",
+                   default=True,
+                   help="Run the golden backbone pass under torch.no_grad() so its "
+                        "activations are not retained for backprop. ~halves training "
+                        "GPU memory at no quality cost. Default: ON.")
+    p.add_argument("--grad-golden", dest="no_grad_golden", action="store_false",
+                   help="Disable --no-grad-golden (debug only).")
+    p.add_argument("--ema-tau", type=float, default=None,
+                   help="EMA time constant. Default = max(2000, 0.3 * total_iterations). "
+                        "Smaller value = faster EMA convergence. Override only for ablation.")
+    p.add_argument("--no-ema", action="store_true",
+                   help="Disable EMA entirely. Use raw model weights for validation. "
+                        "Useful when training is too short for EMA to converge.")
+    p.add_argument("--erasing", type=float, default=0.4,
+                   help="Random-erasing probability for capture images (0=off). "
+                        "Applied to capture ONLY so golden alignment is preserved. "
+                        "Default 0.4 matches Ultralytics RGB training default.")
+    p.add_argument("--freeze-crfm", dest="freeze_crfm", type=int, default=0,
+                   help="Freeze CRFM parameters for the first N epochs (phase-1/2 "
+                        "training). Phase 1: backbone+neck+head train like the RGB "
+                        "baseline so DFL converges fully. Phase 2: CRFM unfreezes "
+                        "and learns on top. Recommended: int(0.7 * epochs). "
+                        "Default 0 = no freezing (both phases merged).")
     return p.parse_args()
+
+
+def random_erase(imgs: torch.Tensor, prob: float = 0.4) -> torch.Tensor:
+    """Random erasing on capture images only (Zhong et al., 2020).
+
+    Zeroes out a random rectangle in each image independently.
+    Applied to the capture image ONLY so the capture↔golden alignment
+    needed by CRFM is preserved.  Matches Ultralytics' erasing=0.4
+    default so the data augmentation is equivalent to the RGB baseline.
+    """
+    if prob <= 0.0:
+        return imgs
+    B, C, H, W = imgs.shape
+    for b in range(B):
+        if torch.rand(1).item() > prob:
+            continue
+        for _ in range(10):  # up to 10 attempts to fit the rectangle
+            area = H * W * (0.02 + torch.rand(1).item() * 0.31)  # 2-33% of image
+            aspect = torch.empty(1).uniform_(0.3, 1 / 0.3).item()
+            eh = int((area / aspect) ** 0.5)
+            ew = int((area * aspect) ** 0.5)
+            if 0 < eh < H and 0 < ew < W:
+                y0 = torch.randint(0, H - eh, (1,)).item()
+                x0 = torch.randint(0, W - ew, (1,)).item()
+                imgs[b, :, y0:y0 + eh, x0:x0 + ew] = 0.0
+                break
+    return imgs
 
 
 def load_golden(path: str, imgsz: int, device: str) -> torch.Tensor:
@@ -410,6 +467,17 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
+# CRFM freeze / unfreeze helper
+# ---------------------------------------------------------------------------
+def _set_crfm_grad(model: "DSYOLOv8m", enabled: bool) -> None:
+    """Enable or disable gradient computation for all three CRFM modules."""
+    for m in [model.crfm_p3, model.crfm_p4, model.crfm_p5]:
+        if hasattr(m, "parameters"):
+            for p in m.parameters():
+                p.requires_grad_(enabled)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -457,6 +525,19 @@ def main() -> None:
         for _k in list(_module._buffers.keys()):
             if _k in ("total_ops", "total_params"):
                 _module._buffers.pop(_k, None)
+
+    # ---- Phase-1/2 training: freeze CRFM for first N epochs -----------
+    # Phase 1 (epochs 0..freeze_crfm-1): CRFM frozen → model ≡ RGB baseline
+    #   → DFL converges to the same quality as the RGB model (mAP50-95 ~0.826).
+    # Phase 2 (epoch freeze_crfm..end): CRFM unfrozen → CRFM learns on top
+    #   of a well-trained DFL head, adding detection quality without hurting
+    #   localization precision.
+    # Without freezing, CRFM gate gradients compete with DFL gradients from
+    # epoch 1, preventing full DFL convergence → mAP50-95 plateau ~0.78.
+    if args.freeze_crfm > 0:
+        _set_crfm_grad(model, False)
+        print(f"[info] phase-1/2: CRFM frozen for epochs 1-{args.freeze_crfm}, "
+              f"unfreezes at epoch {args.freeze_crfm + 1}")
 
     # ---- Loss adapter --------------------------------------------------
     loss_model = _LossCompatModel(model).to(args.device)
@@ -561,9 +642,23 @@ def main() -> None:
     accumulate = max(1, round(64 / args.batch))
     # Mixed precision
     use_amp = (args.device != "cpu") and torch.cuda.is_available()
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
-    # EMA
-    ema = ModelEMA(model)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    # EMA: tau auto-shrinks on short runs so the EMA actually converges before
+    # the final epoch.  Heuristic: tau ≈ 30 % of total optimiser updates,
+    # floored at 50 (enough to smooth per-batch noise) and capped at 2000
+    # (Ultralytics default for long training schedules).
+    # NOTE: the old floor of 200 caused EMA contamination on short runs
+    # (300 total updates, tau=200 → only 77% converged at end, leaving
+    # 23% of initial pretrained weights in the EMA → DFL head pha loang
+    # → mAP@50-95 thap).  Floor=50 gives >99% convergence at 300 updates.
+    total_updates = math.ceil(len(train_loader) / accumulate) * args.epochs
+    if args.ema_tau is not None:
+        ema_tau = float(args.ema_tau)
+    else:
+        ema_tau = max(50.0, min(2000.0, 0.3 * total_updates))
+    print(f"[info] EMA tau = {ema_tau:.0f} (total_updates ≈ {total_updates}, "
+          f"override with --ema-tau)")
+    ema = ModelEMA(model, tau=ema_tau)
     close_mosaic = 10  # disable mosaic in final N epochs (matches Ultralytics)
 
     # ---- CSV logger ----------------------------------------------------
@@ -580,12 +675,25 @@ def main() -> None:
         f"{'dfl_loss':>10}{'Instances':>12}{'Size':>8}"
     )
 
+    # Reset peak memory once before training; we'll read it back at the end and
+    # include it in test_results.json so the paper's resource table is reproducible.
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
     best_map50 = -1.0
     for epoch in range(args.epochs):
         model.train()
         running = torch.zeros(4, device=args.device)
         n_batches = 0
         n_inst_ep = 0
+
+        # Phase-2: unfreeze CRFM at the designated epoch.
+        if args.freeze_crfm > 0 and epoch == args.freeze_crfm:
+            _set_crfm_grad(model, True)
+            if not args.no_ema:
+                _set_crfm_grad(ema.ema, True)
+            print(f"\n[info] Epoch {epoch+1}: CRFM unfrozen — phase-2 begins "
+                  f"(DFL has converged; CRFM now learns on top)")
 
         # Close mosaic in the final `close_mosaic` epochs (matches Ultralytics)
         if epoch == args.epochs - close_mosaic:
@@ -601,9 +709,28 @@ def main() -> None:
                       bar_format="{l_bar}{bar:10}{r_bar}")
         for i, batch in enumerate(pbar_t):
             imgs = batch["img"].to(args.device).float() / 255.0
+
+            # Synced horizontal flip: flip capture, golden and bboxes together
+            # so the CRFM diff signal stays valid.  Per-batch (not per-image)
+            # to match Ultralytics' RGB pipeline cost-wise.
+            if args.fliplr > 0 and torch.rand(1).item() < args.fliplr:
+                imgs = torch.flip(imgs, dims=[-1])
+                golden_step = torch.flip(golden, dims=[-1])
+                # bboxes are stored as normalised xywh; mirror x_center.
+                if batch["bboxes"].numel():
+                    batch["bboxes"][:, 0] = 1.0 - batch["bboxes"][:, 0]
+            else:
+                golden_step = golden
+
+            # Random erasing on capture only (golden not modified so
+            # capture↔golden alignment for CRFM is preserved).
+            if args.erasing > 0:
+                imgs = random_erase(imgs, prob=args.erasing)
+
             n_inst_ep += int(batch["cls"].shape[0])
-            with torch.cuda.amp.autocast(enabled=use_amp):
-                preds = model(imgs, golden)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                preds = model(imgs, golden_step,
+                              golden_no_grad=args.no_grad_golden)
                 loss, loss_items = loss_fn(preds, batch)  # loss_items = (box, cls, dfl)
             loss_scalar = loss.sum() if loss.ndim > 0 else loss
             scaler.scale(loss_scalar / accumulate).backward()
@@ -614,7 +741,8 @@ def main() -> None:
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-                ema.update(model)
+                if not args.no_ema:
+                    ema.update(model)
 
             running[0] += loss_scalar.detach()
             running[1:] += loss_items.detach()
@@ -633,7 +761,8 @@ def main() -> None:
 
         running /= max(n_batches, 1)
         train_loss, box_l, cls_l, dfl_l = [float(x) for x in running]
-        val = evaluate(ema.ema, val_loader, golden, args.device, nc=nc)
+        val_model = model if args.no_ema else ema.ema
+        val = evaluate(val_model, val_loader, golden, args.device, nc=nc)
         scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
 
@@ -665,7 +794,7 @@ def main() -> None:
             model_class="DSYOLOv8m",
             fusion=args.fusion,
             num_classes=nc,
-            state_dict=ema.ema.state_dict(),  # EMA weights (matches Ultralytics best.pt)
+            state_dict=(model.state_dict() if args.no_ema else ema.ema.state_dict()),
             epoch=epoch + 1,
             metrics=val,
             args=vars(args),
@@ -724,6 +853,8 @@ def main() -> None:
         print(f"Speed: {sp_t.get('preprocess',0):.1f}ms preprocess, "
               f"{sp_t.get('inference',0):.1f}ms inference, "
               f"0.0ms loss, {sp_t.get('postprocess',0):.1f}ms postprocess per image")
+        peak_mem_gb = (float(torch.cuda.max_memory_reserved()) / 1e9
+                       if torch.cuda.is_available() else 0.0)
         test_out = save_dir / "test_results.json"
         with test_out.open("w") as f:
             json.dump(dict(
@@ -732,8 +863,15 @@ def main() -> None:
                 map50=val_test["map50"],
                 map=val_test["map"],
                 split="test",
+                params=int(n_params),
+                gflops=_gflops,
+                peak_gpu_mem_gb=peak_mem_gb,
+                no_grad_golden=bool(args.no_grad_golden),
+                fliplr=float(args.fliplr),
+                ema=bool(not args.no_ema),
             ), f, indent=2)
-        print(f"Test results saved to {test_out}")
+        print(f"Test results saved to {test_out} "
+              f"(peak GPU mem reserved: {peak_mem_gb:.2f} GB)")
 
     # ---- Plots ----------------------------------------------------------
     _plot_results(save_dir, csv_path, variant=args.variant)

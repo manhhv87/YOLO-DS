@@ -89,14 +89,18 @@ class CrossRefFusion(nn.Module):
         # Initialise gate output near zero so CRFM starts as identity and
         # activates gradually.  sigmoid(-4) ≈ 0.018.
         nn.init.constant_(self.gate[-1].bias, -4.0)
-        # alpha_raw is unconstrained; actual alpha = softplus(alpha_raw) >= 0.
-        # softplus(0) ≈ 0.693, so true alpha starts small but positive,
-        # preventing the dead-gradient problem and ruling out negative scaling.
+        # alpha_raw = 0 → alpha = tanh(0) = 0 (exact identity at init, matching
+        # the paper description "alpha initialised to zero").
+        # Using tanh instead of softplus gives d(tanh)/d(alpha_raw)|₀ = 1,
+        # so the gradient to alpha_raw is NOT attenuated by a sigmoid factor.
+        # With softplus(-6) the effective gradient multiplier was sigmoid(-6)≈0.0025,
+        # causing alpha to stay frozen for the first 100 epochs.
+        # tanh also naturally bounds alpha to (-1, 1), preventing divergence.
         self.alpha_raw = nn.Parameter(torch.zeros(1))
 
     @property
     def alpha(self) -> torch.Tensor:
-        return F.softplus(self.alpha_raw)
+        return torch.tanh(self.alpha_raw)
 
     def forward(self, f_cap: torch.Tensor, f_gold: torch.Tensor) -> torch.Tensor:
         if f_gold.shape != f_cap.shape:
@@ -281,29 +285,42 @@ class DSYOLOv8m(nn.Module):
         }
 
         # Backward-compat: older checkpoints stored `crfm_*.alpha` directly
-        # (a learnable scalar with no constraint).  The current CRFM uses
-        # `alpha_raw` and computes `alpha = softplus(alpha_raw)`, so a saved
-        # `alpha` of value `a` corresponds to `alpha_raw = log(exp(a) - 1)`
-        # (inverse-softplus).  Migrate the keys silently so old runs keep
-        # loading.
+        # (a learnable scalar with no constraint).  Current CRFM stores
+        # `alpha_raw` and computes `alpha = tanh(alpha_raw)`.
+        # Migration ladder:
+        #   v1: stored `crfm_*.alpha`    (raw positive scalar, no constraint)
+        #       → convert via atanh(clip(alpha, -0.999, 0.999))
+        #   v2: stored `alpha_raw` from softplus era (typically -6 to -3)
+        #       → alpha = softplus(alpha_raw) ≈ small; map to atanh(that value)
         import math as _math
+
+        def _atanh(x: float) -> float:
+            x = max(-0.9999, min(0.9999, x))
+            return 0.5 * _math.log((1.0 + x) / (1.0 - x))
+
         rename = []
         for k in list(cleaned.keys()):
             if k.endswith(".alpha") and not k.endswith(".alpha_raw"):
+                # v1: direct alpha value stored
                 v = cleaned.pop(k)
-                # inverse-softplus, clamping the input away from zero to keep
-                # the result finite (softplus is convex, so the inverse blows
-                # up as alpha → 0).
                 a_val = float(v.flatten()[0])
-                if a_val <= 1e-6:
-                    raw = -10.0  # softplus(-10) ≈ 4.5e-5 ≈ 0
-                else:
-                    raw = _math.log(_math.expm1(a_val))
+                raw = _atanh(a_val)
                 cleaned[k + "_raw"] = v.detach().clone().fill_(raw)
-                rename.append(k)
+                rename.append((k, "v1→tanh"))
+            elif k.endswith(".alpha_raw"):
+                # v2: softplus-era alpha_raw (very negative values like -6)
+                # softplus(-6) ≈ 0.0025; tanh-era alpha_raw for that is atanh(0.0025) ≈ 0.0025
+                raw_val = float(cleaned[k].flatten()[0])
+                if raw_val < -2.0:
+                    # Looks like softplus-era init: convert softplus(raw_val) → atanh
+                    import torch as _t
+                    sp_val = float(_t.nn.functional.softplus(_t.tensor(raw_val)))
+                    new_raw = _atanh(sp_val)
+                    cleaned[k] = cleaned[k].detach().clone().fill_(new_raw)
+                    rename.append((k, f"softplus({raw_val:.2f})→tanh"))
         if rename:
-            print(f"[from_checkpoint] migrated {len(rename)} legacy "
-                  f"`crfm.alpha` keys → `alpha_raw` (inverse-softplus).")
+            print(f"[from_checkpoint] migrated {len(rename)} alpha key(s): "
+                  + ", ".join(f"{k}({t})" for k, t in rename))
 
         missing, unexpected = model.load_state_dict(cleaned, strict=False)
         # In strict mode, only fail if there are *real* missing keys (not the
@@ -322,7 +339,8 @@ class DSYOLOv8m(nn.Module):
 
     # ----- Forward --------------------------------------------------------
     def forward(
-        self, capture: torch.Tensor, golden: Optional[torch.Tensor] = None
+        self, capture: torch.Tensor, golden: Optional[torch.Tensor] = None,
+        golden_no_grad: bool = True,
     ) -> object:
         """Forward pass.
 
@@ -332,15 +350,27 @@ class DSYOLOv8m(nn.Module):
         golden  : (3, H, W) or (B, 3, H, W) tensor of the golden reference.
                   If a single image is given, it is broadcast to the batch
                   dimension.
+        golden_no_grad : if True (default), the golden backbone pass is run
+                  under ``torch.no_grad()`` so its activations are not retained
+                  for backprop.  This roughly halves training-time activation
+                  memory at no quality cost: gradients still flow into the
+                  shared backbone via the capture path, and the golden
+                  features only need values (not a graph) to feed CRFM's
+                  difference term ``|F_cap - F_gold|``.
         """
         if golden is None:
             raise ValueError("DS-YOLO requires a `golden` reference image at every forward.")
         if golden.dim() == 3:
             golden = golden.unsqueeze(0).expand(capture.shape[0], -1, -1, -1)
 
-        # Shared backbone, two passes.
+        # Shared backbone, two passes.  Golden's pass is detached from autograd
+        # so its activations don't bloat GPU memory during training.
         c_p3, c_p4, c_p5 = self.backbone(capture)
-        g_p3, g_p4, g_p5 = self.backbone(golden)
+        if golden_no_grad:
+            with torch.no_grad():
+                g_p3, g_p4, g_p5 = self.backbone(golden)
+        else:
+            g_p3, g_p4, g_p5 = self.backbone(golden)
 
         # Cross-reference fusion.
         f_p3 = self.crfm_p3(c_p3, g_p3)
@@ -508,7 +538,10 @@ class DSYOLOv8m(nn.Module):
             18: "neck.c2f_n4",
             19: "neck.down_p4",
             21: "neck.c2f_n5",
-            # Head (index 22) intentionally excluded: nc differs (pretrained=80, ours=nc).
+            22: "head",   # head.cv2 (box) is shape-compatible across nc;
+                          # head.cv3 (cls) ends with a 1×1 projection that
+                          # differs when nc≠80 — we filter mismatched shapes
+                          # below so only safe weights are copied.
         }
         copied = 0
         skipped = 0
@@ -523,6 +556,9 @@ class DSYOLOv8m(nn.Module):
             if idx not in idx_to_dst:
                 continue
             new_key = f"{idx_to_dst[idx]}.{rest}"
+            # Shape-compatibility filter: keeps the box (cv2) and cls (cv3)
+            # *featurisers* (everything except the final 1×1 cls projection
+            # whose out-channels = nc) so the head retains its pretrained prior.
             if new_key in dst_sd and dst_sd[new_key].shape == v.shape:
                 dst_sd[new_key] = v
                 copied += 1
