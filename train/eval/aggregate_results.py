@@ -252,9 +252,11 @@ def cmd_perclass(args: argparse.Namespace) -> None:
             yolo    = YOLO(str(weights))
             metrics = yolo.val(data=args.data, imgsz=args.imgsz,
                                split=args.split, verbose=False)
-            per_cls = list(metrics.box.maps)
+            # ap50: per-class AP@IoU=0.5, aligned to ap_class_index
+            ap50_by_cls = {int(c): float(v) for c, v in
+                           zip(metrics.box.ap_class_index, metrics.box.ap50)}
             for i, cls in enumerate(CLASS_NAMES):
-                rows[variant][cls] = per_cls[i] if i < len(per_cls) else float("nan")
+                rows[variant][cls] = ap50_by_cls.get(i, float("nan"))
 
     print(r"% --- paste below into Table III of paper/main.tex ---")
     base, ours = args.variants[0], args.variants[-1]
