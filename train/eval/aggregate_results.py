@@ -8,14 +8,18 @@ Usage::
 
     # Table II — all variants (no GPU needed)
     python aggregate_results.py main \\
-        --runs runs/detect \\
+        --runs    runs/detect \\
+        --ds-runs runs/ds_yolo \\
         --variants rgb diff-only stack6 f-sub ds-yolo
 
     # Table III — per-class mAP (needs GPU)
     python aggregate_results.py perclass \\
-        --runs runs/detect \\
+        --runs    runs/detect \\
+        --ds-runs runs/ds_yolo \\
         --variants rgb ds-yolo \\
-        --data dataset_fixed/data.yaml
+        --data    dataset_fixed/data.yaml \\
+        --golden  datasets/inhouse/golden/golden_inhouse.jpg \\
+        --imgsz   640 --split test
 
     # Latency of a single model
     python aggregate_results.py latency \\
@@ -249,9 +253,12 @@ def cmd_perclass(args: argparse.Namespace) -> None:
             if not weights.is_file():
                 print(f"% [missing weights] {weights}")
                 continue
+            import tempfile
             yolo    = YOLO(str(weights))
-            metrics = yolo.val(data=args.data, imgsz=args.imgsz,
-                               split=args.split, verbose=False)
+            with tempfile.TemporaryDirectory() as _tmp_val:
+                metrics = yolo.val(data=args.data, imgsz=args.imgsz,
+                                   split=args.split, verbose=False,
+                                   project=_tmp_val, name="val")
             # ap50: per-class AP@IoU=0.5, aligned to ap_class_index
             ap50_by_cls = {int(c): float(v) for c, v in
                            zip(metrics.box.ap_class_index, metrics.box.ap50)}
@@ -271,30 +278,58 @@ def cmd_perclass(args: argparse.Namespace) -> None:
 def cmd_latency(args: argparse.Namespace) -> None:
     """Measure mean per-image latency of a trained model.
 
-    Reports the YOLO forward-pass cost only; capture / alignment / OPC UA
-    write times are measured separately on the production PC.
+    Reports Ultralytics' internal preprocess / inference / postprocess
+    breakdown (averaged over --runs-count runs) for Table IV of the paper.
+    Capture / alignment / OPC UA write times are measured separately on the
+    production PC.
     """
     import numpy as np
+    import torch
     from ultralytics import YOLO
 
-    yolo = YOLO(args.weights)
-    img = np.zeros((args.imgsz, args.imgsz, args.channels), dtype=np.uint8)
+    yolo  = YOLO(args.weights)
+    img   = np.zeros((args.imgsz, args.imgsz, args.channels), dtype=np.uint8)
+    cuda  = torch.cuda.is_available()
 
-    # Warmup.
+    def _sync():
+        if cuda:
+            torch.cuda.synchronize()
+
+    # Warmup (not timed).
     for _ in range(20):
         yolo.predict(img, imgsz=args.imgsz, verbose=False)
+    _sync()
 
-    times = []
+    pre_ms, inf_ms, post_ms, wall_ms = [], [], [], []
     for _ in range(args.runs_count):
+        _sync()
         t0 = time.perf_counter()
-        yolo.predict(img, imgsz=args.imgsz, verbose=False)
-        times.append((time.perf_counter() - t0) * 1000.0)
+        results = yolo.predict(img, imgsz=args.imgsz, verbose=False)
+        _sync()
+        wall_ms.append((time.perf_counter() - t0) * 1000.0)
+        spd = results[0].speed          # dict: preprocess / inference / postprocess
+        pre_ms.append(spd.get("preprocess",  0.0))
+        inf_ms.append(spd.get("inference",   0.0))
+        post_ms.append(spd.get("postprocess", 0.0))
 
-    print(f"% latency over {len(times)} runs, imgsz={args.imgsz}, channels={args.channels}")
-    print(f"%   mean   = {statistics.fmean(times):.2f} ms")
-    print(f"%   median = {statistics.median(times):.2f} ms")
-    print(f"%   stdev  = {statistics.stdev(times):.2f} ms")
-    print(f"%   min/max= {min(times):.2f} / {max(times):.2f} ms")
+    def _stats(lst: list) -> str:
+        return f"{statistics.fmean(lst):.2f} ± {statistics.stdev(lst):.2f} ms"
+
+    print(f"% latency over {len(wall_ms)} runs  "
+          f"imgsz={args.imgsz}  channels={args.channels}  "
+          f"device={'cuda' if cuda else 'cpu'}")
+    print(f"%   preprocess  = {_stats(pre_ms)}")
+    print(f"%   inference   = {_stats(inf_ms)}")
+    print(f"%   postprocess = {_stats(post_ms)}")
+    print(f"%   wall total  = {_stats(wall_ms)}")
+    total_mean = statistics.fmean(pre_ms) + statistics.fmean(inf_ms) + statistics.fmean(post_ms)
+    print(f"%   stage sum   = {total_mean:.2f} ms")
+    print(f"% --- Table IV row ---")
+    print(f"YOLO inference & "
+          f"{statistics.fmean(pre_ms):.1f} & "
+          f"{statistics.fmean(inf_ms):.1f} & "
+          f"{statistics.fmean(post_ms):.1f} & "
+          f"{total_mean:.1f} \\\\")
 
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,48 @@ def _load_golden_bgr(golden_path: str, imgsz: int) -> np.ndarray:
     return cv2.resize(golden, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
 
 
+def transform_yolo_labels(lbl_path: Path, out_path: Path,
+                          M: np.ndarray, imgsz: int) -> None:
+    """Transform YOLO-format bounding boxes by homography M.
+
+    YOLO boxes are stored as normalized (cx, cy, w, h).  We project all four
+    corners of each box through M and recompute the axis-aligned bounding box
+    of the projected corners so the labels stay consistent with the warped image.
+    Boxes that land entirely outside the image are dropped.
+    """
+    lines = lbl_path.read_text().splitlines() if lbl_path.is_file() else []
+    out_lines = []
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) < 5:
+            continue
+        cls = parts[0]
+        cx, cy, w, h = map(float, parts[1:5])
+        # Convert normalised -> pixel corners (top-left, top-right, …)
+        x1 = (cx - w / 2) * imgsz
+        y1 = (cy - h / 2) * imgsz
+        x2 = (cx + w / 2) * imgsz
+        y2 = (cy + h / 2) * imgsz
+        corners = np.array([[x1, y1, 1], [x2, y1, 1],
+                             [x2, y2, 1], [x1, y2, 1]], dtype=np.float64)
+        projected = (M @ corners.T).T          # shape (4, 3)
+        projected /= projected[:, 2:3]         # homogeneous divide
+        px, py = projected[:, 0], projected[:, 1]
+        nx1, ny1 = px.min(), py.min()
+        nx2, ny2 = px.max(), py.max()
+        # Clip to image bounds
+        nx1, nx2 = np.clip([nx1, nx2], 0, imgsz)
+        ny1, ny2 = np.clip([ny1, ny2], 0, imgsz)
+        if nx2 - nx1 < 1 or ny2 - ny1 < 1:
+            continue                            # box outside image, drop
+        ncx = ((nx1 + nx2) / 2) / imgsz
+        ncy = ((ny1 + ny2) / 2) / imgsz
+        nw  = (nx2 - nx1) / imgsz
+        nh  = (ny2 - ny1) / imgsz
+        out_lines.append(f"{cls} {ncx:.6f} {ncy:.6f} {nw:.6f} {nh:.6f}")
+    out_path.write_text("\n".join(out_lines), encoding="utf-8")
+
+
 def build_perturbed_rgb(test_img_dir: Path,
                         test_lbl_dir: Path,
                         tmp_dir: Path,
@@ -96,10 +138,16 @@ def build_perturbed_rgb(test_img_dir: Path,
                         sigma_r: float,
                         rng: np.random.Generator,
                         imgsz: int) -> None:
-    """Write perturbed .jpg images + copied labels under
+    """Write perturbed .jpg images + transformed labels under
     ``{tmp_dir}/test/images`` and ``{tmp_dir}/test/labels`` so the layout
     matches what Ultralytics expects for ``mode='val'`` with
-    ``test: test/images`` in the data.yaml."""
+    ``test: test/images`` in the data.yaml.
+
+    Labels are projected through the same homography as the images so that
+    ground-truth boxes remain aligned with the warped image content.  This
+    isolates the model's detection quality under misalignment rather than
+    penalising both models equally for a label-position mismatch.
+    """
     img_out = tmp_dir / "test" / "images"
     lbl_out = tmp_dir / "test" / "labels"
     img_out.mkdir(parents=True, exist_ok=True)
@@ -119,10 +167,7 @@ def build_perturbed_rgb(test_img_dir: Path,
         cv2.imwrite(str(img_out / img_path.name), warped)
 
         lbl = test_lbl_dir / (img_path.stem + ".txt")
-        if lbl.is_file():
-            shutil.copy2(lbl, lbl_out / lbl.name)
-        else:
-            (lbl_out / (img_path.stem + ".txt")).write_text("", encoding="utf-8")
+        transform_yolo_labels(lbl, lbl_out / (img_path.stem + ".txt"), M, imgsz)
 
 
 def write_tmp_yaml(tmp_dir: Path, src_yaml: dict) -> Path:
@@ -225,8 +270,11 @@ def eval_one(yolo,
         if variant == "ds-yolo":
             return _eval_ds_on_tmp(tmp_yaml, ds_context, imgsz)
         else:
-            metrics = yolo.val(data=str(tmp_yaml), split="test",
-                               imgsz=imgsz, verbose=False)
+            import tempfile
+            with tempfile.TemporaryDirectory() as _tmp_val:
+                metrics = yolo.val(data=str(tmp_yaml), split="test",
+                                   imgsz=imgsz, verbose=False,
+                                   project=_tmp_val, name="val")
             return float(metrics.box.map50)
 
 
