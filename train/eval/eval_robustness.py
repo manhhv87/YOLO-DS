@@ -96,9 +96,12 @@ def build_perturbed_rgb(test_img_dir: Path,
                         sigma_r: float,
                         rng: np.random.Generator,
                         imgsz: int) -> None:
-    """Write perturbed .jpg images + copied labels into tmp_dir."""
-    img_out = tmp_dir / "images"
-    lbl_out = tmp_dir / "labels"
+    """Write perturbed .jpg images + copied labels under
+    ``{tmp_dir}/test/images`` and ``{tmp_dir}/test/labels`` so the layout
+    matches what Ultralytics expects for ``mode='val'`` with
+    ``test: test/images`` in the data.yaml."""
+    img_out = tmp_dir / "test" / "images"
+    lbl_out = tmp_dir / "test" / "labels"
     img_out.mkdir(parents=True, exist_ok=True)
     lbl_out.mkdir(parents=True, exist_ok=True)
 
@@ -123,12 +126,20 @@ def build_perturbed_rgb(test_img_dir: Path,
 
 
 def write_tmp_yaml(tmp_dir: Path, src_yaml: dict) -> Path:
-    """Write a minimal data.yaml pointing only to the perturbed test split."""
+    """Write a minimal data.yaml pointing only to the perturbed test split.
+
+    Layout written by ``build_perturbed_rgb``:
+
+        {tmp_dir}/
+          test/
+            images/*.jpg
+            labels/*.txt
+    """
     d = {
         "path":  str(tmp_dir.resolve()).replace("\\", "/"),
-        "train": "images",   # unused but required by Ultralytics
-        "val":   "images",   # unused but required
-        "test":  "images",
+        "train": "test/images",   # unused but required by Ultralytics
+        "val":   "test/images",   # unused but required
+        "test":  "test/images",
         "names": src_yaml.get("names", {0: "OK", 1: "NG"}),
         "nc":    src_yaml.get("nc", 2),
     }

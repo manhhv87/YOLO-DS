@@ -69,25 +69,24 @@ and process the captured frame in isolation, forcing the network to
 implicitly learn the expected component layout from scratch and making it
 brittle on the small, class-imbalanced datasets typical of real production
 cells. We propose \textbf{DS-YOLO} (Dual-Stream YOLO), a Siamese extension
-of YOLOv8m in which the captured frame and the golden reference are aligned
-via an ORB homography, then routed through a shared backbone in parallel;
-their multi-scale feature maps at $P_3, P_4, P_5$ are fused by a learnable
-\emph{Cross-Reference Fusion Module} (CRFM) before the PANet neck and
-detection head. The CRFM adds only ${\sim}70\,$K parameters and is
-initialised so the network starts as the YOLOv8m baseline, keeping the
-pretrained prior fully intact. We further evaluate \textbf{RG-YOLO}, a
-lightweight early-fusion variant that appends the per-pixel absolute
-difference $|\Ialn-\Igolden|$ as a fourth input channel, offering a
-strong and deployment-friendly reference. Both designs are compared
-against four ablations on an in-house dataset of $75$ raw captures
-($211$ after Roboflow augmentation) from a single SMT board layout,
-covering four component types and $5{,}420$ component-level OK/NG instances.
-DS-YOLO improves mAP@0.5 from \TODO{$x_0$} to \TODO{$x_1$}
-($+\TODO{$\Delta$}$~pp) over the RGB-only baseline while incurring less
-than \TODO{$\delta t$}~ms additional latency. The detector is deployed on a
-working SMT cell where a PC-side vision server returns OK/NG verdicts to a
-Mitsubishi MELSEC-Q PLC via OPC~UA, and the PLC orchestrates two
-articulated robots over CC-Link to physically sort defective boards.
+of YOLOv8m that routes the captured frame and the golden reference through a
+shared backbone in parallel; their multi-scale feature maps at $P_3, P_4,
+P_5$ are fused by a learnable \emph{Cross-Reference Fusion Module} (CRFM)
+before the PANet neck and detection head. Because fusion operates at feature
+scale (stride $8$--$32$\,px), DS-YOLO is robust to sub-pixel fixture drift
+without any pixel-level alignment pre-processing. The CRFM adds only
+${\sim}70\,$K parameters and is initialised so the network starts as the
+YOLOv8m baseline, keeping the pretrained prior fully intact. DS-YOLO is
+compared against four ablations---Diff-only, Stack6, and F-Sub---on an
+in-house dataset of $75$ raw captures ($211$ after Roboflow augmentation)
+from a single SMT board layout, covering four component types and
+$5{,}420$ component-level OK/NG instances. DS-YOLO improves mAP@0.5 from
+\TODO{$x_0$} to \TODO{$x_1$} ($+\TODO{$\Delta$}$~pp) over the RGB-only
+baseline while incurring less than \TODO{$\delta t$}~ms additional latency.
+The detector is deployed on a working SMT cell where a PC-side vision server
+returns OK/NG verdicts to a Mitsubishi MELSEC-Q PLC via OPC~UA, and the
+PLC orchestrates two articulated robots over CC-Link to physically sort
+defective boards.
 \end{abstract}
 
 \begin{IEEEkeywords}

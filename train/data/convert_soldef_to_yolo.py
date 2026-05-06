@@ -177,8 +177,11 @@ def main() -> None:
     n_test_w  = write_split(test,  args.dst, "test")
 
     # Write data.yaml.
+    # Use "." so the YAML resolves to its own directory at load time — makes
+    # the dataset portable between machines (Colab, local, etc.) instead of
+    # baking in an absolute Windows / Linux path.
     data_yaml = dict(
-        path=str(args.dst.resolve()).replace("\\", "/"),
+        path=".",
         train="train/images",
         val="val/images",
         test="test/images",

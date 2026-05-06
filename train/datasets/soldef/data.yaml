@@ -7,7 +7,7 @@
 #   - train: 300 | val: 64 | test: 64
 #   - OK: 186 instances | NG: 485 instances
 
-path: C:/Users/manhh/Desktop/PCB/train/datasets/soldef
+path: .                       # resolved relative to this YAML file
 train: train/images
 val:   val/images
 test:  test/images

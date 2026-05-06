@@ -265,7 +265,7 @@ def step_soldef_val(dry: bool, force: bool) -> None:
     _train_variant("rgb", SOLDEF_DATA, name=name, dry=dry)
 
 
-def step_tables(dry: bool, _force: bool) -> None:
+def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for uniform calling convention; tables always re-run
     """Print all LaTeX table rows from aggregated results."""
     print("\n" + "=" * 60)
     print("TABLE II — Main results")
@@ -322,7 +322,7 @@ def step_tables(dry: bool, _force: bool) -> None:
         print("[skip] robustness CSVs not found yet")
 
 
-def step_figures(dry: bool, _force: bool) -> None:
+def step_figures(dry: bool, force: bool = False) -> None:  # `force` accepted for uniform calling convention; figures always re-run
     """Generate paper figures (requires trained weights)."""
     data_yaml = DATASET_FIXED / "data.yaml"
     rgb_w     = RUNS_DETECT / "rgb"    / "weights" / "best.pt"
