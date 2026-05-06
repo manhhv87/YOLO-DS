@@ -223,9 +223,14 @@ def cmd_perclass(args: argparse.Namespace) -> None:
 
             with open(args.data) as f:
                 data_yaml = _yaml.safe_load(f)
+            # Resolve test path: use data.yaml's "path" key as root (Ultralytics
+            # convention), falling back to the data.yaml's own directory.
+            _data_root = _Path(data_yaml.get("path", _Path(args.data).parent))
+            _test_rel  = data_yaml["test"]
+            _test_abs  = str(_data_root / _test_rel) if not _Path(_test_rel).is_absolute() else _test_rel
             cfg = get_cfg(DEFAULT_CFG, overrides=dict(
                 imgsz=args.imgsz, batch=4, mode="val", rect=False, cache=False))
-            val_ds  = build_yolo_dataset(cfg, data_yaml["test"], 4, data_yaml, mode="val")
+            val_ds  = build_yolo_dataset(cfg, _test_abs, 4, data_yaml, mode="val")
             val_ldr = DataLoader(val_ds, batch_size=4, shuffle=False,
                                  num_workers=2, collate_fn=val_ds.collate_fn)
             golden  = load_golden(args.golden, args.imgsz, device)
