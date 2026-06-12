@@ -56,8 +56,11 @@ def main() -> None:
     p.add_argument("--data", required=True, help="data.yaml.")
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--split", default="test")
-    p.add_argument("--tol", type=float, default=0.005,
-                   help="Max allowed |mAP@0.5 delta| to count as a pass.")
+    p.add_argument("--tol", type=float, default=0.002,
+                   help="Max allowed |delta| (on BOTH mAP@0.5 and mAP@0.5:0.95) "
+                        "to count as a pass. Must be TIGHTER than the headline "
+                        "DS-YOLO-vs-baseline gap (~0.007) for the check to be "
+                        "meaningful.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -103,14 +106,17 @@ def main() -> None:
           f"delta={d50:+.4f}")
     print(f"  mAP@0.5:0.95 ultralytics={map_ultra:.4f}  custom={map_custom:.4f}  "
           f"delta={d:+.4f}")
-    ok = abs(d50) <= args.tol
-    print(f"  {'PASS' if ok else 'FAIL'}: |mAP@0.5 delta| "
-          f"{'<=' if ok else '>'} tol={args.tol}")
+    # Gate on BOTH mAP@0.5 and mAP@0.5:0.95 — both are Table II columns.
+    ok = (abs(d50) <= args.tol) and (abs(d) <= args.tol)
+    print(f"  {'PASS' if ok else 'FAIL'}: max(|delta50|,|delta50-95|)="
+          f"{max(abs(d50), abs(d)):.4f} {'<=' if ok else '>'} tol={args.tol}")
     print("=======================================================")
     if not ok:
-        print("[hint] A large delta means the two evaluators are NOT comparable; "
-              "Table II cross-variant deltas are then unreliable. Align NMS "
-              "(per-class), conf, iou, max_det and the P/R operating point.")
+        print("[hint] A delta this large means the two evaluators are NOT "
+              "comparable; Table II cross-variant deltas are then unreliable. "
+              "Ensure evaluate() uses the SAME ultralytics NMS as yolo.val() "
+              "(from ultralytics.utils.nms, multi_label=True), and aligned "
+              "conf/iou/max_det/letterbox.")
         sys.exit(1)
 
 

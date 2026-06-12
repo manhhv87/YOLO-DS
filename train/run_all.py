@@ -75,12 +75,19 @@ SEEDS    = [0]
 #   NO_GRAD_GOLDEN=True: golden backbone pass runs under torch.no_grad() so its
 #               activations are not retained for backprop.  Halves training-time
 #               GPU memory at no quality cost.
-#   ERASING=0.4: random erasing on capture images only (golden unchanged so
-#               CRFM alignment is preserved). Matches Ultralytics default for
-#               RGB baseline — ensures fair comparison.
+#   ERASING=0.0: random erasing is DISABLED for the in-house comparison.
+#               (The old 0.4 was a FAIRNESS BUG: Ultralytics 'erasing' applies
+#               only to the classification pipeline, NOT detection, so the
+#               RGB/Stack6 detection baselines get zero random-erasing while the
+#               custom loop applied 40% — an uncontrolled extra augmentation on
+#               the 'ours' variants only.)
 FLIPLR         = "0.5"
 NO_GRAD_GOLDEN = True
-ERASING        = "0.4"
+ERASING        = "0.0"   # disabled: detection baselines get none (see note above)
+# EMA time-constant pinned to match Ultralytics ModelEMA (tau=2000); the custom
+# loop's auto-shrink heuristic otherwise picks ~50 on short runs, giving the
+# 'ours' variants a much faster EMA than the baselines.
+EMA_TAU        = "2000"
 # FREEZE_CRFM: freeze CRFM for the first 70 % of epochs so DFL converges
 # like the RGB baseline before CRFM learning starts (phase-1/2 training).
 # Set to 0 to disable (single-phase training).
@@ -204,6 +211,7 @@ def _train_ds(name: str, fusion: str, dry: bool,
     if NO_GRAD_GOLDEN:
         cmd.append("--no-grad-golden")
     cmd += ["--erasing", ERASING]
+    cmd += ["--ema-tau", EMA_TAU]
     if FREEZE_CRFM_FRAC > 0:
         cmd += ["--freeze-crfm", str(int(FREEZE_CRFM_FRAC * EPOCHS))]
     if data_fraction < 1.0:

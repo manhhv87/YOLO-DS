@@ -44,62 +44,64 @@ from tqdm import tqdm
 from ultralytics.data.build import build_yolo_dataset
 from ultralytics.utils.loss import v8DetectionLoss
 from ultralytics.utils.metrics import ap_per_class, box_iou
+# xywh2xyxy stays in utils.ops across versions; only NMS moved.
+from ultralytics.utils.ops import xywh2xyxy
+
+# CRITICAL FOR EVALUATOR FAIRNESS: use the SAME NMS that yolo.val() uses for the
+# RGB/Stack6 baselines, called with multi_label=True. In ultralytics >=8.3
+# non_max_suppression moved utils.ops -> utils.nms, so the old
+# `from ultralytics.utils.ops import non_max_suppression` ALWAYS failed and the
+# previous torchvision fallback ran with single-label (best-class) semantics —
+# producing a structurally different prediction set than the multi_label
+# baselines and a fake ~0.7pp per-variant offset. Prefer the real ultralytics
+# NMS; only fall back to a (now multi_label-aware) torchvision shim if neither
+# import exists.
 try:
-    from ultralytics.utils.ops import non_max_suppression, xywh2xyxy
+    from ultralytics.utils.nms import non_max_suppression
 except ImportError:
-    # ultralytics >= 8.3 removed non_max_suppression from utils.ops.
-    # Provide compatible fallbacks using torchvision NMS.
-    import torchvision
+    try:
+        from ultralytics.utils.ops import non_max_suppression
+    except ImportError:
+        import torchvision
 
-    def xywh2xyxy(x: torch.Tensor) -> torch.Tensor:
-        """Convert (cx, cy, w, h) → (x1, y1, x2, y2)."""
-        y = x.clone()
-        y[..., 0] = x[..., 0] - x[..., 2] / 2
-        y[..., 1] = x[..., 1] - x[..., 3] / 2
-        y[..., 2] = x[..., 0] + x[..., 2] / 2
-        y[..., 3] = x[..., 1] + x[..., 3] / 2
-        return y
-
-    def non_max_suppression(
-        prediction: torch.Tensor,
-        conf_thres: float = 0.25,
-        iou_thres: float = 0.45,
-        max_det: int = 300,
-        **_kwargs,
-    ) -> list[torch.Tensor]:
-        """NMS fallback compatible with Ultralytics Detect head output.
-
-        Accepts prediction in either [B, 4+nc, N] (channel-first, Ultralytics
-        8.4.x default) or [B, N, 4+nc] (channel-last, older versions).
-        Boxes are expected to already be in xyxy pixel coordinates.
-        Returns a list of [K, 6] tensors per image: x1, y1, x2, y2, conf, cls.
-        """
-        # Normalise to [B, N, 4+nc] (channel-last).
-        if prediction.ndim == 3 and prediction.shape[1] < prediction.shape[2]:
-            prediction = prediction.transpose(1, 2)
-
-        output: list[torch.Tensor] = []
-        for x in prediction:           # x: [N, 4+nc]
-            boxes = xywh2xyxy(x[:, :4])  # Detect head outputs cx,cy,w,h → convert to xyxy
-            cls_scores = x[:, 4:]        # per-class scores (already sigmoid)
-            conf, cls_idx = cls_scores.max(dim=1)
-            mask = conf > conf_thres
-            boxes, conf, cls_idx = boxes[mask], conf[mask], cls_idx[mask]
-            if boxes.shape[0] == 0:
-                output.append(torch.zeros(0, 6, device=x.device))
-                continue
-            # Per-class NMS (matches Ultralytics yolo.val). A single global
-            # (class-agnostic) NMS would suppress overlapping boxes of DIFFERENT
-            # classes and make this evaluator non-comparable with the baselines'
-            # yolo.val — invalidating cross-variant Table II/V deltas.
-            keep = torchvision.ops.batched_nms(
-                boxes.float(), conf.float(), cls_idx, iou_thres
-            )[:max_det]
-            result = torch.cat(
-                [boxes[keep], conf[keep, None], cls_idx[keep, None].float()], dim=1
-            )
-            output.append(result)
-        return output
+        def non_max_suppression(
+            prediction: torch.Tensor,
+            conf_thres: float = 0.25,
+            iou_thres: float = 0.45,
+            max_det: int = 300,
+            nc: int = 0,
+            multi_label: bool = False,
+            agnostic: bool = False,
+            **_kwargs,
+        ) -> list[torch.Tensor]:
+            """torchvision NMS shim (last resort) — replicates Ultralytics'
+            multi_label semantics so it stays comparable to yolo.val().
+            prediction: [B, 4+nc, N] (channel-first Detect output) or [B, N, 4+nc].
+            Returns a list of [K, 6]: x1, y1, x2, y2, conf, cls.
+            """
+            if prediction.ndim == 3 and prediction.shape[1] < prediction.shape[2]:
+                prediction = prediction.transpose(1, 2)
+            output: list[torch.Tensor] = []
+            for x in prediction:                 # x: [N, 4+nc]
+                boxes_xy = xywh2xyxy(x[:, :4])    # cx,cy,w,h -> x1,y1,x2,y2
+                cls_scores = x[:, 4:]
+                if multi_label and cls_scores.shape[1] > 1:
+                    ii, jj = (cls_scores > conf_thres).nonzero(as_tuple=True)
+                    boxes, conf, cls_idx = boxes_xy[ii], cls_scores[ii, jj], jj
+                else:
+                    conf, cls_idx = cls_scores.max(dim=1)
+                    m = conf > conf_thres
+                    boxes, conf, cls_idx = boxes_xy[m], conf[m], cls_idx[m]
+                if boxes.shape[0] == 0:
+                    output.append(torch.zeros(0, 6, device=x.device))
+                    continue
+                idxs = torch.zeros_like(cls_idx) if agnostic else cls_idx
+                keep = torchvision.ops.batched_nms(
+                    boxes.float(), conf.float(), idxs, iou_thres
+                )[:max_det]
+                output.append(torch.cat(
+                    [boxes[keep], conf[keep, None], cls_idx[keep, None].float()], dim=1))
+            return output
 
 from models.ds_yolo import DSYOLOv8m, _LossCompatModel
 
@@ -191,10 +193,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-ema", action="store_true",
                    help="Disable EMA entirely. Use raw model weights for validation. "
                         "Useful when training is too short for EMA to converge.")
-    p.add_argument("--erasing", type=float, default=0.4,
+    p.add_argument("--erasing", type=float, default=0.0,
                    help="Random-erasing probability for capture images (0=off). "
-                        "Applied to capture ONLY so golden alignment is preserved. "
-                        "Default 0.4 matches Ultralytics RGB training default.")
+                        "DEFAULT 0.0: Ultralytics 'erasing' is classification-only, "
+                        "so the detection baselines get NONE — applying it here "
+                        "would be an uncontrolled augmentation on the 'ours' "
+                        "variants. Only enable if you also add it to the baselines.")
     p.add_argument("--freeze-crfm", dest="freeze_crfm", type=int, default=0,
                    help="Freeze CRFM parameters for the first N epochs (phase-1/2 "
                         "training). Phase 1: backbone+neck+head train like the RGB "
@@ -369,7 +373,15 @@ def evaluate(
         t2 = time.perf_counter()
         # In eval mode the Detect head returns (decoded, raw_per_scale_list).
         decoded = preds[0] if isinstance(preds, (tuple, list)) else preds
-        outputs = non_max_suppression(decoded, conf, iou_nms, max_det=max_det)
+        # Match yolo.val() exactly: per-class NMS with multi_label=True so the
+        # same model produces the same candidate set as the Ultralytics
+        # baselines (each box can emit one detection per class above conf_thres).
+        try:
+            outputs = non_max_suppression(decoded, conf, iou_nms,
+                                          nc=nc, multi_label=(nc > 1),
+                                          agnostic=False, max_det=max_det)
+        except TypeError:
+            outputs = non_max_suppression(decoded, conf, iou_nms, max_det=max_det)
         t3 = time.perf_counter()
         t_pre += t1 - t0
         t_inf += t2 - t1
@@ -661,19 +673,33 @@ def main() -> None:
     optimizer = torch.optim.SGD(
         g_bias + g_bn, lr=args.lr0, momentum=args.momentum, nesterov=True,
     )
-    optimizer.add_param_group({'params': g_weights, 'weight_decay': args.weight_decay})
+    # Match Ultralytics' weight-decay scaling: decay = wd * batch * accumulate /
+    # nbs(64). At batch=4 (accumulate=16) this equals wd exactly; the scaling
+    # keeps the two loops matched at ANY batch size (so the H3 fraction study or
+    # an OOM-driven batch change can't silently re-introduce a wd confound).
+    _accum = max(1, round(64 / args.batch))
+    _wd_eff = args.weight_decay * args.batch * _accum / 64.0
+    optimizer.add_param_group({'params': g_weights, 'weight_decay': _wd_eff})
     if g_other:
         optimizer.add_param_group({'params': g_other})
         print(f"[info] optimizer: {len(g_other)} extra param(s) in catch-all group "
               f"(e.g. CRFM alpha × {len(g_other)})")
 
+    # LR schedule: Ultralytics one_cycle ((1-cos(e*pi/E))/2*(lrf-1)+1) so the
+    # cosine SHAPE matches trainer.py (verified: e=50/E=100 -> 0.505, e=10 ->
+    # 0.976, identical to Ultralytics). The previous schedule restarted the
+    # cosine at epoch 3 over a shorter range, diverging by up to ~2.4pp of the
+    # LR multiplier mid-training. A short linear warmup is applied as a
+    # multiplier over the first warmup_epochs.
+    lrf = 0.01
     warmup_epochs = 3
+    warmup_momentum = 0.8
+    def _one_cycle(e: int) -> float:
+        return ((1 - math.cos(e * math.pi / max(args.epochs, 1))) / 2) * (lrf - 1) + 1
     def lr_lambda(e: int) -> float:
         if e < warmup_epochs:
-            return (e + 1) / warmup_epochs          # linear warmup: 0.33 → 0.67 → 1.0
-        # True cosine decay from 1.0 to 0.01 (matches Ultralytics default).
-        progress = (e - warmup_epochs) / max(args.epochs - warmup_epochs, 1)
-        return 0.01 + 0.5 * (1.0 - 0.01) * (1.0 + math.cos(math.pi * progress))
+            return _one_cycle(e) * (e + 1) / warmup_epochs
+        return _one_cycle(e)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     # Gradient accumulation: simulate nominal batch=64 (matches Ultralytics nbs=64)
@@ -718,12 +744,27 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
-    best_map50 = -1.0
+    # Best-checkpoint selection metric: use mAP@0.5:0.95 (val['map']) to MATCH
+    # Ultralytics' fitness (w=[0,0,0,1] in this version), so all four variants
+    # are checkpoint-selected on the SAME metric. Selecting on mAP@0.5 here while
+    # the Ultralytics baselines select on mAP@0.5:0.95 biased DS-YOLO toward its
+    # own reported mAP@0.5 column.
+    best_fitness = -1.0
     for epoch in range(args.epochs):
         model.train()
         running = torch.zeros(4, device=args.device)
         n_batches = 0
         n_inst_ep = 0
+
+        # Momentum warmup (epoch granularity) to match Ultralytics
+        # warmup_momentum 0.8 -> momentum over the first warmup_epochs.
+        if epoch < warmup_epochs:
+            _mom = warmup_momentum + (args.momentum - warmup_momentum) * (epoch + 1) / warmup_epochs
+        else:
+            _mom = args.momentum
+        for _pg in optimizer.param_groups:
+            if "momentum" in _pg:
+                _pg["momentum"] = _mom
 
         # Phase-2: unfreeze CRFM at the designated epoch.
         if args.freeze_crfm > 0 and epoch == args.freeze_crfm:
@@ -748,17 +789,25 @@ def main() -> None:
         for i, batch in enumerate(pbar_t):
             imgs = batch["img"].to(args.device).float() / 255.0
 
-            # Synced horizontal flip: flip capture, golden and bboxes together
-            # so the CRFM diff signal stays valid.  Per-batch (not per-image)
-            # to match Ultralytics' RGB pipeline cost-wise.
-            if args.fliplr > 0 and torch.rand(1).item() < args.fliplr:
-                imgs = torch.flip(imgs, dims=[-1])
-                golden_step = torch.flip(golden, dims=[-1])
-                # bboxes are stored as normalised xywh; mirror x_center.
-                if batch["bboxes"].numel():
-                    batch["bboxes"][:, 0] = 1.0 - batch["bboxes"][:, 0]
-            else:
-                golden_step = golden
+            # Synced horizontal flip, PER-IMAGE (matches Ultralytics RandomFlip).
+            # Per-batch flipping gave only 2 outcomes/batch vs 2^B for the
+            # baselines — a strictly less diverse augmentation. We flip each
+            # sample independently and pair each flipped capture with a flipped
+            # golden (built as a per-sample [B,3,H,W] tensor) so CRFM alignment
+            # is preserved; the model accepts a batched golden (ds_yolo forward).
+            golden_step = golden
+            if args.fliplr > 0:
+                B = imgs.shape[0]
+                flip_mask = torch.rand(B) < args.fliplr          # CPU, seeded
+                if flip_mask.any():
+                    dmask = flip_mask.to(imgs.device)
+                    imgs[dmask] = torch.flip(imgs[dmask], dims=[-1])
+                    golden_step = golden.unsqueeze(0).expand(B, -1, -1, -1).clone()
+                    golden_step[dmask] = torch.flip(golden_step[dmask], dims=[-1])
+                    # mirror x_center of bboxes whose image was flipped
+                    if batch["bboxes"].numel():
+                        sel = flip_mask[batch["batch_idx"].view(-1).long()]
+                        batch["bboxes"][sel, 0] = 1.0 - batch["bboxes"][sel, 0]
 
             # Random erasing on capture only (golden not modified so
             # capture↔golden alignment for CRFM is preserved).
@@ -838,8 +887,8 @@ def main() -> None:
             args=vars(args),
         )
         torch.save(ckpt, weights_dir / "last.pt")
-        if val["map50"] > best_map50:
-            best_map50 = val["map50"]
+        if val["map"] > best_fitness:          # mAP@0.5:0.95 == Ultralytics fitness
+            best_fitness = val["map"]
             torch.save(ckpt, weights_dir / "best.pt")
 
     # ---- Final validation on best.pt ------------------------------------

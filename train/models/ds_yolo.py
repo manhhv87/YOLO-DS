@@ -267,7 +267,18 @@ class DSYOLOv8m(nn.Module):
         self.crfm_p4 = _mk("p4", cfg["C_P4"])
         self.crfm_p5 = _mk("p5", cfg["C_P5"])
         self.neck = _PANetNeck(cfg)
-        # Detect head
+        # Detect head. CRITICAL FOR INIT-PRIOR FAIRNESS: build the LEGACY
+        # (full-conv) classification branch. ultralytics >=8.3 defaults Detect to
+        # a lighter DWConv cls head (Detect.legacy=False), whose state-dict keys
+        # are shape-incompatible with the full-conv cls head stored in the
+        # official yolov8s.pt. With the default head ~1.5M pretrained cls params
+        # (13.5% of the model) FAIL to load and train from scratch, handicapping
+        # DS-YOLO/F-Sub vs the RGB/Stack6 baselines (which load the legacy head).
+        # Verified on ultralytics 8.4.52: legacy=False copies 313/355 keys,
+        # legacy=True copies 349/355 (the 6 remaining are nc-dependent and
+        # benign). `legacy` is a class attribute, so this is version-robust
+        # (a no-op on pre-8.3 versions that only had the full-conv head).
+        Detect.legacy = True
         self.head = Detect(nc=num_classes, ch=(cfg["C_P3"], cfg["C_P4"], cfg["C_P5"]))
         self.head.stride = torch.tensor([8.0, 16.0, 32.0])
         self.head.bias_init()
@@ -600,7 +611,13 @@ class DSYOLOv8m(nn.Module):
                           # below so only safe weights are copied.
         }
         copied = 0
-        skipped = 0
+        skipped_keys: list[str] = []
+
+        def _is_benign(key: str) -> bool:
+            # The only EXPECTED skip is the final 1x1 cls projection whose
+            # out-channels = nc (differs from the 80-class source).
+            return ".cv3." in key and (key.endswith(".2.weight") or key.endswith(".2.bias"))
+
         for k, v in src_sd.items():
             if not k.startswith("model."):
                 continue
@@ -619,10 +636,22 @@ class DSYOLOv8m(nn.Module):
                 dst_sd[new_key] = v
                 copied += 1
             else:
-                skipped += 1
+                skipped_keys.append(new_key)
 
+        # Surface any NON-benign skip loudly: anything other than the
+        # nc-dependent cls projection means a featuriser/backbone/neck/box/cls
+        # key failed to transfer (e.g. a DWConv-vs-full-conv head mismatch) — a
+        # silent init-prior HANDICAP vs the RGB/Stack6 baselines. This is exactly
+        # the bug fixed by building the Detect head with legacy=True.
+        unexpected = [k for k in skipped_keys if not _is_benign(k)]
+        if unexpected:
+            print(f"[load_yolov8_pretrained] WARNING: {len(unexpected)} pretrained "
+                  f"key(s) did NOT transfer beyond the expected nc-projection "
+                  f"tensors — this variant starts partly FROM SCRATCH and is not "
+                  f"init-comparable to a standard YOLOv8. First few: {unexpected[:6]}")
         self.load_state_dict(dst_sd, strict=False)
-        return {"copied": copied, "skipped": skipped, "total_src": len(src_sd)}
+        return {"copied": copied, "skipped": len(skipped_keys),
+                "total_src": len(src_sd), "unexpected_skips": unexpected}
 
 
 # =============================================================================
