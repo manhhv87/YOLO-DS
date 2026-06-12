@@ -33,7 +33,9 @@ is a learnable scalar initialised to zero. The model therefore reduces
 exactly to the YOLOv8m baseline at the start of training and only
 deviates from it as ``alpha`` grows away from zero.
 
-Parameter overhead vs. YOLOv8m: ~70K params across the three CRFM.
+Parameter overhead: ~173K params across the three CRFM for variant 's' (the
+size reported in the paper; ~260K for 'm').  The class is size-parameterised
+despite the historical ``DSYOLOv8m`` name — pass ``variant=`` to pick n/s/m/l/x.
 Compute overhead: ~+50% FLOPs from the second backbone pass on golden.
 """
 from __future__ import annotations
@@ -77,30 +79,36 @@ class CrossRefFusion(nn.Module):
     in regions where the capture differs from the reference.
     """
 
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, use_gate: bool = True,
+                 learn_alpha: bool = True, fixed_alpha: float = 1.0) -> None:
         super().__init__()
         mid = max(channels // 4, 32)
+        self.use_gate = use_gate
+        self.learn_alpha = learn_alpha
         self.gate = nn.Sequential(
             nn.Conv2d(channels, mid, kernel_size=1, bias=False),
             nn.BatchNorm2d(mid),
             nn.SiLU(inplace=True),
             nn.Conv2d(mid, channels, kernel_size=1),
         )
-        # Initialise gate output near zero so CRFM starts as identity and
-        # activates gradually.  sigmoid(-4) ≈ 0.018.
-        nn.init.constant_(self.gate[-1].bias, -4.0)
-        # alpha_raw = 0 → alpha = tanh(0) = 0 (exact identity at init, matching
-        # the paper description "alpha initialised to zero").
-        # Using tanh instead of softplus gives d(tanh)/d(alpha_raw)|₀ = 1,
-        # so the gradient to alpha_raw is NOT attenuated by a sigmoid factor.
-        # With softplus(-6) the effective gradient multiplier was sigmoid(-6)≈0.0025,
-        # causing alpha to stay frozen for the first 100 epochs.
-        # tanh also naturally bounds alpha to (-1, 1), preventing divergence.
-        self.alpha_raw = nn.Parameter(torch.zeros(1))
+        # With the sigmoid gate, init gate output near zero (sigmoid(-4)≈0.018)
+        # so CRFM starts near-identity.  Without the gate (additive ablation) a
+        # -4 bias would inject a large constant offset, so use 0 there.
+        nn.init.constant_(self.gate[-1].bias, -4.0 if use_gate else 0.0)
+        # alpha = tanh(alpha_raw); alpha_raw=0 -> alpha=0 = exact identity at init.
+        # tanh gives d(tanh)/d(alpha_raw)|0 = 1 (no gradient attenuation) and
+        # bounds alpha to (-1,1).  Ablation: a fixed (non-learned) scalar.
+        if learn_alpha:
+            self.alpha_raw = nn.Parameter(torch.zeros(1))
+        else:
+            self.register_parameter("alpha_raw", None)
+            self.register_buffer("_fixed_alpha", torch.tensor(float(fixed_alpha)))
 
     @property
     def alpha(self) -> torch.Tensor:
-        return torch.tanh(self.alpha_raw)
+        if self.alpha_raw is not None:
+            return torch.tanh(self.alpha_raw)
+        return self._fixed_alpha
 
     def forward(self, f_cap: torch.Tensor, f_gold: torch.Tensor) -> torch.Tensor:
         if f_gold.shape != f_cap.shape:
@@ -108,8 +116,13 @@ class CrossRefFusion(nn.Module):
                 f_gold, size=f_cap.shape[-2:], mode="bilinear", align_corners=False
             )
         diff = (f_cap - f_gold).abs()
-        gate = torch.sigmoid(self.gate(diff))
-        return f_cap + self.alpha * gate * f_cap
+        h = self.gate(diff)
+        if self.use_gate:
+            # Default CRFM: spatial self-gating of the capture features by the
+            # difference-derived attention mask.
+            return f_cap + self.alpha * torch.sigmoid(h) * f_cap
+        # Ablation: additive difference injection without the learned gate.
+        return f_cap + self.alpha * h
 
 
 class SubFusion(nn.Module):
@@ -125,6 +138,17 @@ class SubFusion(nn.Module):
                 f_gold, size=f_cap.shape[-2:], mode="bilinear", align_corners=False
             )
         return f_cap - f_gold
+
+
+class _IdentityFusion(nn.Module):
+    """Pass-through: ignore the golden stream at this scale.
+
+    Used for the fusion-location ablation (e.g. fuse only at P5): scales not in
+    ``fuse_scales`` forward the capture features unchanged.
+    """
+
+    def forward(self, f_cap: torch.Tensor, f_gold: torch.Tensor) -> torch.Tensor:
+        return f_cap
 
 
 # =============================================================================
@@ -207,11 +231,13 @@ class DSYOLOv8m(nn.Module):
     num_classes : int
     variant : str
         YOLOv8 size — one of ``"n"``, ``"s"``, ``"m"``, ``"l"``, ``"x"``.
-        Default ``"m"`` (matches the original paper).
+        Default ``"s"`` (matches the paper's Table II and run_all.py SIZE='s').
     """
 
-    def __init__(self, num_classes: int = 2, variant: str = "m",
-                 fusion: str = "crfm") -> None:
+    def __init__(self, num_classes: int = 2, variant: str = "s",
+                 fusion: str = "crfm",
+                 fuse_scales: tuple = ("p3", "p4", "p5"),
+                 use_gate: bool = True, learn_alpha: bool = True) -> None:
         super().__init__()
         if variant not in _VARIANTS:
             raise ValueError(f"Unknown variant '{variant}'. Choose from {list(_VARIANTS)}")
@@ -220,17 +246,26 @@ class DSYOLOv8m(nn.Module):
         cfg = _VARIANTS[variant]
         self.variant = variant
         self.fusion_type = fusion
+        self.fuse_scales = tuple(fuse_scales)
+        self.use_gate = use_gate
+        self.learn_alpha = learn_alpha
         # Single backbone instance; capture and golden are both routed
         # through it (shared weights).
         self.backbone = _Backbone(cfg)
-        if fusion == "crfm":
-            self.crfm_p3 = CrossRefFusion(cfg["C_P3"])
-            self.crfm_p4 = CrossRefFusion(cfg["C_P4"])
-            self.crfm_p5 = CrossRefFusion(cfg["C_P5"])
-        else:  # "sub"
-            self.crfm_p3 = SubFusion()
-            self.crfm_p4 = SubFusion()
-            self.crfm_p5 = SubFusion()
+
+        # Per-scale fusion. Scales not in fuse_scales pass the capture features
+        # through unchanged (fusion-location ablation). CRFM gate/alpha can be
+        # ablated via use_gate / learn_alpha.
+        def _mk(scale: str, ch: int) -> nn.Module:
+            if scale not in self.fuse_scales:
+                return _IdentityFusion()
+            if fusion == "crfm":
+                return CrossRefFusion(ch, use_gate=use_gate, learn_alpha=learn_alpha)
+            return SubFusion()
+
+        self.crfm_p3 = _mk("p3", cfg["C_P3"])
+        self.crfm_p4 = _mk("p4", cfg["C_P4"])
+        self.crfm_p5 = _mk("p5", cfg["C_P5"])
         self.neck = _PANetNeck(cfg)
         # Detect head
         self.head = Detect(nc=num_classes, ch=(cfg["C_P3"], cfg["C_P4"], cfg["C_P5"]))
@@ -272,11 +307,21 @@ class DSYOLOv8m(nn.Module):
                 f"Was it written by train_ds.py?"
             )
 
+        _args   = ckpt.get("args", {}) or {}
         nc      = int(ckpt.get("num_classes", 2))
-        variant = ckpt.get("args", {}).get("variant") or ckpt.get("variant", "m")
-        fusion  = ckpt.get("fusion") or ckpt.get("args", {}).get("fusion", "crfm")
+        variant = _args.get("variant") or ckpt.get("variant", "s")
+        fusion  = ckpt.get("fusion") or _args.get("fusion", "crfm")
 
-        model = cls(num_classes=nc, variant=variant, fusion=fusion).to(device)
+        # Ablation config (older checkpoints lack these keys -> full CRFM).
+        fs = _args.get("fuse_scales", ("p3", "p4", "p5"))
+        if isinstance(fs, str):
+            fs = tuple(s.strip() for s in fs.split(",") if s.strip())
+        use_gate    = not _args.get("no_gate", False)
+        learn_alpha = not _args.get("fixed_alpha", False)
+
+        model = cls(num_classes=nc, variant=variant, fusion=fusion,
+                    fuse_scales=tuple(fs), use_gate=use_gate,
+                    learn_alpha=learn_alpha).to(device)
 
         # Strip thop-injected buffers (added by thop.profile during training).
         cleaned = {
@@ -366,11 +411,22 @@ class DSYOLOv8m(nn.Module):
         # Shared backbone, two passes.  Golden's pass is detached from autograd
         # so its activations don't bloat GPU memory during training.
         c_p3, c_p4, c_p5 = self.backbone(capture)
-        if golden_no_grad:
-            with torch.no_grad():
+        # Run the golden pass with BatchNorm in EVAL mode.  The golden is a single
+        # fixed frame; letting it update the shared backbone's BN running stats
+        # (which torch.no_grad does NOT prevent) biases eval statistics toward the
+        # golden and breaks the "alpha=0 reduces exactly to the YOLOv8 baseline"
+        # property.  Freeze BN for the golden pass only, then restore.
+        backbone_was_training = self.backbone.training
+        self.backbone.eval()
+        try:
+            if golden_no_grad:
+                with torch.no_grad():
+                    g_p3, g_p4, g_p5 = self.backbone(golden)
+            else:
                 g_p3, g_p4, g_p5 = self.backbone(golden)
-        else:
-            g_p3, g_p4, g_p5 = self.backbone(golden)
+        finally:
+            if backbone_was_training:
+                self.backbone.train()
 
         # Cross-reference fusion.
         f_p3 = self.crfm_p3(c_p3, g_p3)

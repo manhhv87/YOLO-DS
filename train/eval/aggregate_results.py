@@ -146,6 +146,10 @@ def cmd_main(args: argparse.Namespace) -> None:
     }
 
     print(r"% --- paste below into Table II of paper/main.tex ---")
+    # Integrity guard: detect two variants that report byte-identical metrics,
+    # which almost always means a test_results.json was copied between run dirs
+    # (the 'diff-only' == RGB bug). Surfacing it prevents shipping a fake row.
+    _seen_sigs: dict = {}
     for variant in args.variants:
         if variant in _DS_VARIANT_TO_DIR:
             run_dir = Path(args.ds_runs) / _DS_VARIANT_TO_DIR[variant]
@@ -184,8 +188,105 @@ def cmd_main(args: argparse.Namespace) -> None:
                 map_   = _fmt(best.get("metrics/mAP50-95(B)"))
             print(f"% [warn] {variant}: test_results.json missing, using val metrics")
 
+        _sig = (prec, recall, map50, map_)
+        if "--" not in _sig and _sig in _seen_sigs:
+            print(f"% [INTEGRITY WARNING] '{variant}' has metrics identical to "
+                  f"'{_seen_sigs[_sig]}' {_sig} — almost certainly a copied "
+                  f"test_results.json, not a distinct run. Verify before submitting.")
+        elif "--" not in _sig:
+            _seen_sigs[_sig] = variant
+
         print(f"{PRETTY.get(variant, variant)} & "
               f"{prec} & {recall} & {map50} & {map_} \\\\")
+
+
+# Variant -> on-disk run-dir base name (shared by cmd_main and cmd_mainstats).
+_DS_VARIANT_TO_DIR = {
+    "ds-yolo":            "ds_yolo",
+    "ds-yolo-soldef-pre": "ds_yolo_soldef_pre",
+    "f-sub":              "f_sub",
+}
+_DETECT_VARIANT_TO_DIR = {
+    "rgb-soldef-pre": "rgb_soldef_pre",
+}
+
+
+def cmd_mainstats(args: argparse.Namespace) -> None:
+    """Build Table II rows as mean$\\pm$std over multiple seeds.
+
+    Reads each seed run's test_results.json (canonical name for seed 0, with an
+    ``_s{seed}`` suffix for seed>0, matching run_all.py's naming) and reports
+    mean$\\pm$std for precision / recall / mAP@0.5 / mAP@0.5:0.95. A +0.7pp gap
+    on an 11-image test set is only meaningful with this variance.
+    """
+    def _dir_for(variant: str, seed: int) -> Path:
+        if variant in _DS_VARIANT_TO_DIR:
+            base, root = _DS_VARIANT_TO_DIR[variant], Path(args.ds_runs)
+        elif variant in _DETECT_VARIANT_TO_DIR:
+            base, root = _DETECT_VARIANT_TO_DIR[variant], Path(args.runs)
+        else:
+            base, root = variant, Path(args.runs)
+        name = base if seed == 0 else f"{base}_s{seed}"
+        return root / name
+
+    def _ms(xs: list[float]) -> str:
+        if not xs:
+            return "--"
+        if len(xs) == 1:
+            return f"{xs[0]:.3f}"
+        return f"{statistics.fmean(xs):.3f}$\\pm${statistics.stdev(xs):.3f}"
+
+    print(r"% --- Table II (mean$\pm$std over seeds) — paste into main.tex ---")
+    print(f"% seeds = {args.seeds}")
+    for variant in args.variants:
+        vals: dict[str, list[float]] = {"precision": [], "recall": [], "map50": [], "map": []}
+        n_found = 0
+        for seed in args.seeds:
+            td = _read_test_json(_dir_for(variant, seed))
+            if not td:
+                continue
+            n_found += 1
+            for k in vals:
+                try:
+                    vals[k].append(float(td[k]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+        if n_found == 0:
+            print(f"% [missing] {variant}: no seed runs found "
+                  f"(looked for {[str(_dir_for(variant, s)) for s in args.seeds]})")
+            continue
+        print(f"{PRETTY.get(variant, variant)} & {_ms(vals['precision'])} & "
+              f"{_ms(vals['recall'])} & {_ms(vals['map50'])} & {_ms(vals['map'])} "
+              f"\\\\  % n={n_found} seeds")
+
+
+_ABLATION_PRETTY = {
+    "ds_yolo":            r"DS-YOLO (P3+P4+P5, gate, learn.\ $\alpha$)",
+    "ds_crfm_p4p5":       r"\quad fuse P4+P5 only",
+    "ds_crfm_p5":         r"\quad fuse P5 only",
+    "ds_crfm_nogate":     r"\quad no gate (additive diff)",
+    "ds_crfm_fixedalpha": r"\quad fixed $\alpha{=}1$",
+}
+
+
+def cmd_ablation(args: argparse.Namespace) -> None:
+    """Print the CRFM design-ablation table from each run's test_results.json."""
+    print(r"% --- CRFM design ablation (paste into main.tex) ---")
+    _seen: dict = {}
+    for name in args.names:
+        td = _read_test_json(Path(args.ds_runs) / name)
+        if not td:
+            print(f"% [missing] {name}")
+            continue
+        sig = (_fmt(td.get("precision")), _fmt(td.get("recall")),
+               _fmt(td.get("map50")), _fmt(td.get("map")))
+        if "--" not in sig and sig in _seen:
+            print(f"% [INTEGRITY WARNING] {name} has metrics identical to "
+                  f"{_seen[sig]} — likely a duplicate/copied run.")
+        elif "--" not in sig:
+            _seen[sig] = name
+        label = _ABLATION_PRETTY.get(name, name)
+        print(f"{label} & {sig[0]} & {sig[1]} & {sig[2]} & {sig[3]} \\\\")
 
 
 def cmd_perclass(args: argparse.Namespace) -> None:
@@ -247,11 +348,16 @@ def cmd_perclass(args: argparse.Namespace) -> None:
             golden  = load_golden(args.golden, args.imgsz, device)
             val_met = ds_evaluate(model, val_ldr, golden, device, nc=nc)
 
-            # DS-YOLO evaluate() returns overall metrics; for per-class we
-            # re-run with Ultralytics validator via a temporary wrapper.
-            # As a fallback, store the scalar mAP for both classes.
-            for cls in CLASS_NAMES:
-                rows[variant][cls] = val_met.get("map50", float("nan"))
+            # evaluate() already computes genuine per-class AP@0.5 in
+            # per_class['ap50'] aligned to per_class['classes'] (the class
+            # indices that actually appeared).  Map those to OK/NG instead of
+            # duplicating the scalar overall mAP across both classes (the old
+            # stub made Table III's DS-YOLO column and its delta meaningless).
+            pc = val_met.get("per_class", {}) or {}
+            ap50_by_cls = {int(c): float(v)
+                           for c, v in zip(pc.get("classes", []), pc.get("ap50", []))}
+            for i, cls in enumerate(CLASS_NAMES):
+                rows[variant][cls] = ap50_by_cls.get(i, float("nan"))
 
         else:
             # --- Ultralytics path ----------------------------------------
@@ -356,8 +462,21 @@ def main() -> None:
     pm = sub.add_parser("main", parents=[common],
                         help="Aggregate Table II from results.csv files.")
     pm.add_argument("--variants", nargs="+",
-                    default=["rgb", "diff-only", "stack6", "f-sub", "ds-yolo"])
+                    default=["rgb", "stack6", "f-sub", "ds-yolo"])
     pm.set_defaults(func=cmd_main)
+
+    pms = sub.add_parser("mainstats", parents=[common],
+                         help="Table II as mean+/-std over multiple seeds.")
+    pms.add_argument("--variants", nargs="+",
+                     default=["rgb", "stack6", "f-sub", "ds-yolo"])
+    pms.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
+    pms.set_defaults(func=cmd_mainstats)
+
+    pa = sub.add_parser("ablation", parents=[common],
+                        help="CRFM design-ablation table from test_results.json.")
+    pa.add_argument("--names", nargs="+", required=True,
+                    help="DS run-dir names under --ds-runs (ds_yolo ds_crfm_p5 ...).")
+    pa.set_defaults(func=cmd_ablation)
 
     pc = sub.add_parser("perclass", parents=[common],
                         help="Build Table III by re-running val.")
@@ -366,13 +485,13 @@ def main() -> None:
                     help="data.yaml of the dataset used for evaluation.")
     pc.add_argument("--golden", default=None,
                     help="Golden image path (required when ds-yolo is in variants).")
-    pc.add_argument("--imgsz", type=int, default=1024)
+    pc.add_argument("--imgsz", type=int, default=640)
     pc.add_argument("--split", default="test")
     pc.set_defaults(func=cmd_perclass)
 
     pl = sub.add_parser("latency", help="Time the YOLO forward pass.")
     pl.add_argument("--weights",    required=True)
-    pl.add_argument("--imgsz",      type=int, default=1024)
+    pl.add_argument("--imgsz",      type=int, default=640)
     pl.add_argument("--channels",   type=int, default=3)
     pl.add_argument("--runs-count", type=int, default=200)
     pl.set_defaults(func=cmd_latency)

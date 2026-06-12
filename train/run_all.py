@@ -63,6 +63,10 @@ EPOCHS   = 100
 IMGSZ    = 640
 BATCH    = 4
 SIZE     = "s"
+# Multi-seed study: a +0.7pp mAP gap on an 11-image test set is only meaningful
+# with variance. Override via --seeds 0 1 2. seed=0 keeps the canonical run names
+# (rgb, ds_yolo, ...) for backward compatibility; seed>0 appends _s{seed}.
+SEEDS    = [0]
 
 # DS-YOLO-specific defaults:
 #   FLIPLR=0.5: synced horizontal flip on capture, golden and bboxes (matches
@@ -127,7 +131,7 @@ def step_resplit(dry: bool, force: bool) -> None:
 
 def _train_variant(variant: str, data: Path, name: str | None = None,
                    fraction: float = 1.0, extra: list | None = None,
-                   dry: bool = False) -> None:
+                   seed: int = 0, dry: bool = False) -> None:
     name = name or variant
     out  = RUNS_DETECT / name / "weights" / "best.pt"
     # Do not skip here — caller decides.
@@ -138,6 +142,7 @@ def _train_variant(variant: str, data: Path, name: str | None = None,
            "--epochs",   str(EPOCHS),
            "--imgsz",    str(IMGSZ),
            "--batch",    str(BATCH),
+           "--seed",     str(seed),
            "--name",     name]
     if fraction < 1.0:
         cmd += ["--data-fraction", str(fraction)]
@@ -149,31 +154,43 @@ def _train_variant(variant: str, data: Path, name: str | None = None,
 def step_train_all(dry: bool, force: bool) -> None:
     data_rgb = DATASET_FIXED / "data.yaml"
 
+    # NOTE: 'diff-only' is intentionally NOT trained here. train.py applies no
+    # diff preprocessing (VARIANT_CHANNELS['diff-only']=3, plain RGB), and the
+    # diff-dataset builder (data/build_4ch_dataset.py) is missing, so a
+    # 'diff-only' run is just a duplicate RGB model — exactly the bug where its
+    # test_results.json was byte-identical to rgb. Re-enable ONLY after a genuine
+    # aligned |capture-golden| diff dataset is built and fed in.
     variants_data = [
         ("rgb",       data_rgb),
-        ("diff-only", data_rgb),
         ("stack6",    data_rgb),
     ]
     for variant, data in variants_data:
-        out = RUNS_DETECT / variant / "weights" / "best.pt"
-        if not force and exists(out):
-            print(f"[skip] train {variant} — {out} exists")
-            continue
-        _train_variant(variant, data, dry=dry)
+        for seed in SEEDS:
+            name = variant if seed == 0 else f"{variant}_s{seed}"
+            out = RUNS_DETECT / name / "weights" / "best.pt"
+            if not force and exists(out):
+                print(f"[skip] train {name} — {out} exists")
+                continue
+            _train_variant(variant, data, name=name, seed=seed, dry=dry)
 
 
 def _train_ds(name: str, fusion: str, dry: bool,
               save_dir: Path | None = None,
               data_fraction: float = 1.0,
+              data: Path | None = None,
+              seed: int = 0,
               extra: list | None = None) -> None:
     """Train one DS-YOLO variant (fusion=crfm or sub) via train_ds.py.
 
     Always passes ``--fliplr FLIPLR`` and ``--no-grad-golden`` so the run
     matches the paper's intended setup (synced flip, ~50 % less training
     GPU memory).  Override by appending to ``extra``.
+
+    ``data`` lets the caller pass a fraction-subset data.yaml (shared across
+    RGB and DS-YOLO) instead of the full dataset — see step_fraction.
     """
     cmd = [sys.executable, "train_ds.py",
-           "--data",     str(DATASET_FIXED / "data.yaml"),
+           "--data",     str(data or (DATASET_FIXED / "data.yaml")),
            "--golden",   str(GOLDEN),
            "--variant",  SIZE,
            "--fusion",   fusion,
@@ -181,6 +198,7 @@ def _train_ds(name: str, fusion: str, dry: bool,
            "--imgsz",    str(IMGSZ),
            "--batch",    str(BATCH),
            "--fliplr",   FLIPLR,
+           "--seed",     str(seed),
            "--name",     name,
            "--save-dir", str(save_dir or RUNS_DS)]
     if NO_GRAD_GOLDEN:
@@ -196,17 +214,20 @@ def _train_ds(name: str, fusion: str, dry: bool,
 
 
 def step_train_ds(dry: bool, force: bool) -> None:
-    # DS-YOLO (CRFM fusion — main contribution)
-    if force or not exists(RUNS_DS / "ds_yolo" / "weights" / "best.pt"):
-        _train_ds("ds_yolo", fusion="crfm", dry=dry)
-    else:
-        print(f"[skip] train ds_yolo — output exists")
+    for seed in SEEDS:
+        # DS-YOLO (CRFM fusion — main contribution)
+        ds_name = "ds_yolo" if seed == 0 else f"ds_yolo_s{seed}"
+        if force or not exists(RUNS_DS / ds_name / "weights" / "best.pt"):
+            _train_ds(ds_name, fusion="crfm", dry=dry, seed=seed)
+        else:
+            print(f"[skip] train {ds_name} — output exists")
 
-    # F-Sub (feature subtraction ablation)
-    if force or not exists(RUNS_DS / "f_sub" / "weights" / "best.pt"):
-        _train_ds("f_sub", fusion="sub", dry=dry)
-    else:
-        print(f"[skip] train f_sub — output exists")
+        # F-Sub (feature subtraction ablation)
+        fsub_name = "f_sub" if seed == 0 else f"f_sub_s{seed}"
+        if force or not exists(RUNS_DS / fsub_name / "weights" / "best.pt"):
+            _train_ds(fsub_name, fusion="sub", dry=dry, seed=seed)
+        else:
+            print(f"[skip] train {fsub_name} — output exists")
 
 
 def step_fraction(dry: bool, force: bool) -> None:
@@ -217,23 +238,37 @@ def step_fraction(dry: bool, force: bool) -> None:
     # plot_data_fraction.py reads runs/detect/rgb/ and runs/ds_yolo/ds_yolo/ for 100%
     for frac in [0.25, 0.50]:
         frac_tag = str(int(frac * 100))
+        for seed in SEEDS:
+            sfx = "" if seed == 0 else f"_s{seed}"
 
-        # RGB — Ultralytics always saves to runs/detect/<name>/
-        name_rgb = f"rgb_{frac_tag}pct"
-        out_rgb  = RUNS_DETECT / name_rgb / "weights" / "best.pt"
-        if force or not exists(out_rgb):
-            _train_variant("rgb", data_rgb, name=name_rgb, fraction=frac, dry=dry)
-        else:
-            print(f"[skip] fraction rgb {frac_tag}% — {out_rgb} exists")
+            # One shared, seed-fixed subset per (fraction, seed) so RGB and
+            # DS-YOLO train on the IDENTICAL images. Both run at fraction=1.0.
+            # (Previously RGB used Ultralytics first-N fraction and DS-YOLO a
+            #  seeded randperm → different subsets, confounding the H3 claim.)
+            subset_yaml = DATASET_FIXED / f"data_frac{frac_tag}_seed{seed}.yaml"
+            if force or not exists(subset_yaml):
+                run([sys.executable, "data/make_fraction_subset.py",
+                     "--data",     str(data_rgb),
+                     "--fraction", str(frac),
+                     "--seed",     str(seed),
+                     "--out-yaml", str(subset_yaml)], dry=dry)
 
-        # DS-YOLO
-        name_ds = f"ds_yolo_{frac_tag}pct"
-        out_ds  = RUNS_FRACTION / name_ds / "weights" / "best.pt"
-        if force or not exists(out_ds):
-            _train_ds(name_ds, fusion="crfm", dry=dry,
-                      save_dir=RUNS_FRACTION, data_fraction=frac)
-        else:
-            print(f"[skip] fraction ds-yolo {frac_tag}% — {out_ds} exists")
+            # RGB — fraction=1.0: the subset is baked into subset_yaml's list.
+            name_rgb = f"rgb_{frac_tag}pct{sfx}"
+            out_rgb  = RUNS_DETECT / name_rgb / "weights" / "best.pt"
+            if force or not exists(out_rgb):
+                _train_variant("rgb", subset_yaml, name=name_rgb, seed=seed, dry=dry)
+            else:
+                print(f"[skip] fraction {name_rgb} — {out_rgb} exists")
+
+            # DS-YOLO — same subset_yaml, fraction left at 1.0.
+            name_ds = f"ds_yolo_{frac_tag}pct{sfx}"
+            out_ds  = RUNS_FRACTION / name_ds / "weights" / "best.pt"
+            if force or not exists(out_ds):
+                _train_ds(name_ds, fusion="crfm", dry=dry,
+                          save_dir=RUNS_FRACTION, data=subset_yaml, seed=seed)
+            else:
+                print(f"[skip] fraction {name_ds} — {out_ds} exists")
 
 
 def step_robustness(dry: bool, force: bool) -> None:
@@ -332,6 +367,40 @@ def step_soldef_finetune(dry: bool, force: bool) -> None:
         print(f"[skip] soldef_finetune ds-yolo -- {out_ds} exists")
 
 
+def step_crfm_ablation(dry: bool, force: bool) -> None:
+    """CRFM design study: justify the module's design choices.
+
+    The full DS-YOLO (fuse p3,p4,p5 + sigmoid gate + learnable alpha) is already
+    trained by step_train_ds as 'ds_yolo'. Here we train only the ablated
+    variants and print a comparison table:
+      * fusion location : P5 only vs P4+P5 (vs full P3+P4+P5 = ds_yolo)
+      * gate            : additive injection without the learned gate
+      * alpha           : fixed (=1) instead of learnable (tanh)
+    """
+    configs = [
+        ("ds_crfm_p5",         ["--fuse-scales", "p5"]),
+        ("ds_crfm_p4p5",       ["--fuse-scales", "p4,p5"]),
+        ("ds_crfm_nogate",     ["--no-gate"]),
+        ("ds_crfm_fixedalpha", ["--fixed-alpha"]),
+    ]
+    for name, extra in configs:
+        out = RUNS_DS / name / "weights" / "best.pt"
+        if not force and exists(out):
+            print(f"[skip] crfm_ablation {name} — {out} exists")
+            continue
+        _train_ds(name, fusion="crfm", dry=dry, extra=extra)
+
+    print("\n" + "=" * 60)
+    print("CRFM DESIGN ABLATION")
+    print("=" * 60)
+    names = ["ds_yolo", "ds_crfm_p4p5", "ds_crfm_p5",
+             "ds_crfm_nogate", "ds_crfm_fixedalpha"]
+    run([sys.executable, "eval/aggregate_results.py", "ablation",
+         "--ds-runs", str(RUNS_DS),
+         "--names",   *names],
+        dry=dry)
+
+
 def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for uniform calling convention; tables always re-run
     """Print all LaTeX table rows from aggregated results."""
     print("\n" + "=" * 60)
@@ -339,7 +408,9 @@ def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for
     print("=" * 60)
     # Order must match Table II in paper.  SolDef-pretrain rows are appended
     # only if their checkpoints exist (step_soldef_finetune has run).
-    table2_variants = ["rgb", "diff-only", "stack6", "f-sub", "ds-yolo"]
+    # 'diff-only' dropped: it was a duplicate RGB run (no real diff input). Add
+    # it back here once a genuine diff dataset + run exists.
+    table2_variants = ["rgb", "stack6", "f-sub", "ds-yolo"]
     if (RUNS_DETECT / "rgb_soldef_pre" / "weights" / "best.pt").is_file():
         table2_variants.append("rgb-soldef-pre")
     if (RUNS_DS / "ds_yolo_soldef_pre" / "weights" / "best.pt").is_file():
@@ -349,6 +420,15 @@ def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for
          "--ds-runs",  str(RUNS_DS),
          "--variants", *table2_variants],
         dry=dry)
+
+    if len(SEEDS) > 1:
+        print("\n--- Table II (mean +/- std over seeds) ---")
+        run([sys.executable, "eval/aggregate_results.py", "mainstats",
+             "--runs",     str(RUNS_DETECT),
+             "--ds-runs",  str(RUNS_DS),
+             "--variants", *table2_variants,
+             "--seeds",    *[str(s) for s in SEEDS]],
+            dry=dry)
 
     print("\n" + "=" * 60)
     print("TABLE III — Per-class mAP")
@@ -440,6 +520,8 @@ ALL_STEPS = [
     "fraction", "robustness", "soldef_val", "soldef_finetune",
     "tables", "figures",
 ]
+# Optional steps: selectable via --steps but NOT run by the default (no-arg) run.
+OPTIONAL_STEPS = ["crfm_ablation"]
 
 STEP_FN = {
     "resplit":          step_resplit,
@@ -449,6 +531,7 @@ STEP_FN = {
     "robustness":       step_robustness,
     "soldef_val":       step_soldef_val,
     "soldef_finetune":  step_soldef_finetune,
+    "crfm_ablation":    step_crfm_ablation,
     "tables":           step_tables,
     "figures":          step_figures,
 }
@@ -457,8 +540,10 @@ STEP_FN = {
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--steps",   nargs="+", default=ALL_STEPS, choices=ALL_STEPS,
-                   help="Which steps to run (default: all).")
+    p.add_argument("--steps",   nargs="+", default=ALL_STEPS,
+                   choices=ALL_STEPS + OPTIONAL_STEPS,
+                   help="Which steps to run (default: all non-optional). "
+                        "Optional: crfm_ablation.")
     p.add_argument("--force",   action="store_true",
                    help="Re-run even if outputs already exist.")
     p.add_argument("--dry-run", action="store_true",
@@ -468,12 +553,16 @@ def main() -> None:
     p.add_argument("--imgsz",  type=int, default=None)
     p.add_argument("--batch",  type=int, default=None)
     p.add_argument("--size",   default=None, choices=["n", "s", "m", "l", "x"])
+    p.add_argument("--seeds",  type=int, nargs="+", default=None,
+                   help="Seeds for the multi-seed study, e.g. --seeds 0 1 2 "
+                        "(default: [0]). Runs are suffixed _s{seed} for seed>0.")
     args = p.parse_args()
 
     # Apply overrides to module-level constants so all step functions pick them up.
-    global EPOCHS, IMGSZ, BATCH, SIZE
+    global EPOCHS, IMGSZ, BATCH, SIZE, SEEDS
     if args.epochs is not None: EPOCHS = args.epochs
     if args.imgsz  is not None: IMGSZ  = args.imgsz
+    if args.seeds  is not None: SEEDS  = args.seeds
     if args.batch  is not None: BATCH  = args.batch
     if args.size   is not None: SIZE   = args.size
 

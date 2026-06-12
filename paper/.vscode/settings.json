@@ -1,31 +1,11 @@
 {
-"latex-workshop.view.pdf.viewer": "tab",
-"latex-workshop.formatting.latex": "latexindent",
-"editor.formatOnSave": true,
-"editor.wordWrap": "wordWrapColumn",
-"editor.wordWrapColumn": 60,
-"editor.rulers": [60],
-"editor.fontSize": 13,
-
-"latex-workshop.latex.tools": [
-{
-"name": "latexmk",
-"command": "latexmk",
-"args": [
-"-pdf",
-"-interaction=nonstopmode",
-"-synctex=1",
-"%DOC%"
-]
-}
-],
-
-"latex-workshop.latex.recipes": [
-{
-"name": "latexmk (no auxdir)",
-"tools": ["latexmk"]
-}
-],
-
-"latex-workshop.latex.autoBuild.run": "onSave"
+  "latex-workshop.view.pdf.viewer": "tab",
+  "latex-workshop.formatting.latex": "latexindent",
+  "editor.formatOnSave": true,
+  "editor.wordWrap": "wordWrapColumn",
+  "editor.wordWrapColumn": 60,
+  "editor.rulers": [
+    60
+  ],
+  "editor.fontSize": 13
 }

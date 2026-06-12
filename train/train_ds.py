@@ -88,8 +88,12 @@ except ImportError:
             if boxes.shape[0] == 0:
                 output.append(torch.zeros(0, 6, device=x.device))
                 continue
-            keep = torchvision.ops.nms(
-                boxes.float(), conf.float(), iou_thres
+            # Per-class NMS (matches Ultralytics yolo.val). A single global
+            # (class-agnostic) NMS would suppress overlapping boxes of DIFFERENT
+            # classes and make this evaluator non-comparable with the baselines'
+            # yolo.val — invalidating cross-variant Table II/V deltas.
+            keep = torchvision.ops.batched_nms(
+                boxes.float(), conf.float(), cls_idx, iou_thres
             )[:max_det]
             result = torch.cat(
                 [boxes[keep], conf[keep, None], cls_idx[keep, None].float()], dim=1
@@ -139,6 +143,16 @@ def parse_args() -> argparse.Namespace:
                         "(matches the YOLOv8s baselines used in the paper's Table II).")
     p.add_argument("--fusion",     default="crfm", choices=["crfm", "sub"],
                    help="Fusion type: crfm=DS-YOLO, sub=F-Sub ablation. Default: crfm.")
+    # ---- CRFM design ablations (Section: CRFM design study) ----
+    p.add_argument("--fuse-scales", dest="fuse_scales", default="p3,p4,p5",
+                   help="Comma list of scales to apply CRFM at (subset of "
+                        "p3,p4,p5). Fusion-location ablation, e.g. 'p5' or 'p4,p5'.")
+    p.add_argument("--no-gate", dest="no_gate", action="store_true",
+                   help="CRFM ablation: additive difference injection WITHOUT the "
+                        "learned sigmoid gate.")
+    p.add_argument("--fixed-alpha", dest="fixed_alpha", action="store_true",
+                   help="CRFM ablation: fixed (non-learned) alpha=1 instead of the "
+                        "learnable tanh scalar.")
     p.add_argument("--pretrained", default=None,
                    help="Pretrained weights path. Default: yolov8{variant}.pt")
     p.add_argument("--epochs",     type=int, default=100)
@@ -482,8 +496,16 @@ def _set_crfm_grad(model: "DSYOLOv8m", enabled: bool) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     args = parse_args()
+    # Full determinism so reported mAP is reproducible and the multi-seed study
+    # (P1) measures real architectural variance rather than RNG drift.
+    import random as _random
+    _random.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     save_dir = Path(args.save_dir) / args.name
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -500,7 +522,14 @@ def main() -> None:
     if isinstance(names_map, list):
         names_map = {i: n for i, n in enumerate(names_map)}
 
-    model = DSYOLOv8m(num_classes=nc, variant=args.variant, fusion=args.fusion).to(args.device)
+    _fuse_scales = tuple(s.strip() for s in args.fuse_scales.split(",") if s.strip())
+    model = DSYOLOv8m(num_classes=nc, variant=args.variant, fusion=args.fusion,
+                      fuse_scales=_fuse_scales, use_gate=not args.no_gate,
+                      learn_alpha=not args.fixed_alpha).to(args.device)
+    if args.fusion == "crfm":
+        print(f"[info] CRFM ablation: fuse_scales={_fuse_scales} "
+              f"gate={'on' if not args.no_gate else 'OFF'} "
+              f"alpha={'learnable' if not args.fixed_alpha else 'fixed=1'}")
     report = model.load_yolov8_pretrained(args.pretrained)
     print(f"[info] pretrained: copied {report['copied']} / {report['total_src']} keys\n")
 
@@ -583,9 +612,18 @@ def main() -> None:
     else:
         collate_fn = train_ds.collate_fn
 
+    def _seed_worker(worker_id: int) -> None:
+        wseed = (args.seed + worker_id) % (2 ** 32)
+        np.random.seed(wseed)
+        import random as _r
+        _r.seed(wseed)
+
+    _loader_gen = torch.Generator()
+    _loader_gen.manual_seed(args.seed)
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                               num_workers=args.workers, collate_fn=collate_fn,
-                              pin_memory=True)
+                              pin_memory=True, generator=_loader_gen,
+                              worker_init_fn=_seed_worker)
     val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                               num_workers=args.workers, collate_fn=val_ds.collate_fn,
                               pin_memory=True)

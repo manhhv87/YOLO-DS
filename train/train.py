@@ -39,13 +39,19 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--variant", choices=list(VARIANT_CHANNELS), required=True)
     p.add_argument("--data", required=True, help="Path to the dataset YAML.")
-    p.add_argument("--size",    default="m", choices=["n", "s", "m", "l", "x"],
-                   help="YOLOv8 backbone size (n/s/m/l/x). Default: m.")
+    p.add_argument("--size",    default="s", choices=["n", "s", "m", "l", "x"],
+                   help="YOLOv8 backbone size (n/s/m/l/x). Default: s "
+                        "(matches the paper and run_all.py).")
     p.add_argument("--weights", default=None,
                    help="Pretrained weights path. Default: yolov8{size}.pt")
-    p.add_argument("--epochs", type=int, default=60)
-    p.add_argument("--imgsz", type=int, default=1024)
+    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=4)
+    p.add_argument("--lr0", type=float, default=0.01,
+                   help="Initial LR. MUST match train_ds.py (SGD@0.01) so the "
+                        "baseline-vs-DS-YOLO comparison isolates the architecture.")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Random seed (vary it for the multi-seed study).")
     p.add_argument("--name", default=None)
     p.add_argument("--data-fraction", type=float, default=1.0,
                    help="Fraction of training data to use (for the H3 study).")
@@ -109,6 +115,21 @@ def main() -> None:
         batch=args.batch,
         name=args.name or args.variant,
         fraction=args.data_fraction,
+        # --- Unified optimisation recipe: MUST match train_ds.py exactly so the
+        # DS-YOLO-vs-baseline comparison isolates the CRFM architecture, not the
+        # optimiser. Ultralytics' default optimizer='auto' silently selects
+        # AdamW@~1e-3 with a LINEAR schedule on small datasets, which differed
+        # from DS-YOLO's SGD@1e-2 + cosine and confounded the headline result. ---
+        optimizer="SGD",
+        lr0=args.lr0,
+        lrf=0.01,              # final LR fraction -> matches custom cosine min
+        momentum=0.937,
+        weight_decay=5e-4,
+        warmup_epochs=3.0,
+        cos_lr=True,           # cosine LR (Ultralytics default is linear)
+        seed=args.seed,
+        deterministic=True,
+        # ----------------------------------------------------------------------
         # Geometric augmentations (default 0.0 for the in-house alignment
         # scenario; --full-aug raises them to YOLOv8 defaults for SolDef_A).
         degrees=args.degrees,

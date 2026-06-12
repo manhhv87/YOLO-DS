@@ -240,6 +240,41 @@ def _eval_ds_on_tmp(tmp_yaml: Path, ds_context: dict, imgsz: int) -> float:
 # Evaluate one (sigma_t, sigma_r) point
 # ---------------------------------------------------------------------------
 
+def _resolve_data_root(data_yaml_path: Path, src_yaml: dict) -> Path:
+    """Pick the dataset root that actually exists on disk.
+
+    The data.yaml emitted by Colab runs hard-codes ``path:`` to a
+    ``/content/...`` absolute path that is invalid on any other machine.
+    We try, in order:
+
+      1. ``src_yaml["path"]`` if it exists,
+      2. the directory containing the data.yaml itself,
+      3. ``data.yaml's parent.parent / data_yaml.stem`` (rare, kept for safety).
+
+    The first candidate whose ``test/images`` subfolder exists wins.
+    """
+    test_rel = src_yaml.get("test", "test/images")
+    candidates: list[Path] = []
+    if "path" in src_yaml:
+        candidates.append(Path(src_yaml["path"]))
+    candidates.append(data_yaml_path.parent)
+
+    for root in candidates:
+        if (root / test_rel).is_dir():
+            return root
+
+    # Loud failure with all candidates in the message — much easier to debug
+    # than a generic FileNotFoundError per sigma.
+    raise FileNotFoundError(
+        f"Could not locate test images for {data_yaml_path}.\n"
+        f"  yaml path key   : {src_yaml.get('path', '<unset>')}\n"
+        f"  yaml test key   : {test_rel}\n"
+        f"  candidates tried: {[str(c / test_rel) for c in candidates]}\n"
+        f"Fix: edit {data_yaml_path} so 'path:' points to the local dataset "
+        f"root (or remove it to default to the yaml's own directory)."
+    )
+
+
 def eval_one(yolo,
              variant: str,
              sigma_t: float,
@@ -253,13 +288,10 @@ def eval_one(yolo,
     with open(data_yaml_path) as f:
         src_yaml = yaml.safe_load(f)
 
-    base = Path(src_yaml.get("path", str(data_yaml_path.parent)))
+    base = _resolve_data_root(data_yaml_path, src_yaml)
     test_rel = src_yaml.get("test", "test/images")
     test_img_dir = base / test_rel
     test_lbl_dir = base / test_rel.replace("images", "labels")
-
-    if not test_img_dir.is_dir():
-        raise FileNotFoundError(f"Test image dir not found: {test_img_dir}")
 
     with tempfile.TemporaryDirectory(prefix="robustness_") as tmp:
         tmp_dir = Path(tmp)
@@ -295,7 +327,10 @@ def main() -> None:
                    help="Golden reference image (required for ds-yolo).")
     p.add_argument("--out",      required=True,
                    help="Output CSV path.")
-    p.add_argument("--imgsz",    type=int, default=1024)
+    p.add_argument("--imgsz",    type=int, default=640,
+                   help="Eval resolution. MUST match the model's training "
+                        "imgsz (640 in the paper); a mismatch breaks DS-YOLO "
+                        "golden/CRFM feature alignment and yields NaN/garbage.")
     p.add_argument("--sigmas-t", type=float, nargs="+", default=SIGMAS_T,
                    help="Translation noise std-dev values (px).")
     p.add_argument("--sigmas-r", type=float, nargs="+", default=SIGMAS_R,
@@ -337,14 +372,31 @@ def main() -> None:
     print(f"[robustness] variant={args.variant}  "
           f"{len(combos)} perturbation levels")
 
+    # Fail-fast pre-flight: surface yaml/path errors BEFORE running 5
+    # perturbation loops that would otherwise all NaN-out silently.
+    with open(data_yaml_path) as _f:
+        _src_yaml = yaml.safe_load(_f)
+    _resolve_data_root(data_yaml_path, _src_yaml)  # raises with full diagnostic
+
     for sigma_t, sigma_r in combos:
-        try:
-            map50 = eval_one(yolo, args.variant, sigma_t, sigma_r,
-                             data_yaml_path, args.imgsz, rng,
-                             ds_context=ds_context)
-        except Exception as e:
-            print(f"  [WARN] sigma_t={sigma_t} sigma_r={sigma_r} failed: {e}")
-            map50 = float("nan")
+        # Let exceptions propagate loudly.  A per-sigma failure is almost always
+        # systematic (imgsz mismatch, bad path, empty labels), not data-dependent
+        # — the old `except Exception -> nan` silently masked it and produced the
+        # committed CSV of all-NaNs.
+        map50 = eval_one(yolo, args.variant, sigma_t, sigma_r,
+                         data_yaml_path, args.imgsz, rng,
+                         ds_context=ds_context)
+
+        # Sanity gate: zero perturbation MUST reproduce the clean test mAP.  If it
+        # is NaN/zero the evaluation pipeline is broken (commonly an imgsz
+        # mismatch vs the training resolution) — abort instead of emitting a
+        # misleading table.
+        if sigma_t == 0 and sigma_r == 0 and (map50 != map50 or map50 <= 0.0):
+            raise RuntimeError(
+                f"sigma_t=0 produced mAP@0.5={map50}; it must reproduce the clean "
+                f"test mAP (>0). Verify --imgsz ({args.imgsz}) matches the model's "
+                f"training resolution and that test labels are present. Aborting "
+                f"rather than writing a CSV of NaNs.")
 
         rows.append(dict(sigma_t=sigma_t, sigma_r=sigma_r, map50=map50))
         print(f"  sigma_t={sigma_t:>4}px  sigma_r={sigma_r}deg  "
