@@ -296,75 +296,78 @@ that merges the two feature streams before the YOLOv8 detection head.
 \resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
   font=\small, >={Latex[length=2mm]},
-  img/.style ={draw, rounded corners=1pt, minimum width=1.15cm, minimum height=1.0cm, align=center, fill=gray!10},
-  bb/.style  ={draw, rounded corners=2pt, minimum width=1.55cm, minimum height=1.3cm, align=center, fill=blue!8},
-  fc/.style  ={draw, fill=cyan!22, minimum height=0.3cm, inner sep=0pt},
-  fg/.style  ={draw, fill=teal!24, minimum height=0.3cm, inner sep=0pt},
-  crfm/.style={draw, rounded corners=2pt, minimum width=1.5cm, minimum height=1.55cm, align=center, fill=orange!22},
+  img/.style ={draw, rounded corners=1pt, minimum width=1.2cm, minimum height=1.05cm, align=center, fill=gray!10},
+  bb/.style  ={draw, rounded corners=2pt, minimum width=1.6cm, minimum height=1.3cm, align=center, fill=blue!8},
+  fc/.style  ={draw, fill=cyan!22, minimum height=0.32cm, inner sep=0pt},
+  fg/.style  ={draw, fill=teal!24, minimum height=0.32cm, inner sep=0pt},
+  crfm/.style={draw, rounded corners=2pt, minimum width=1.7cm, minimum height=1.7cm, align=center, fill=orange!22},
   proc/.style={draw, rounded corners=2pt, align=center, fill=green!10},
-  res/.style ={draw, rounded corners=2pt, minimum width=1.4cm, minimum height=1.05cm, align=center, fill=gray!10},
-  op/.style  ={draw, circle, inner sep=0pt, minimum size=0.5cm, fill=white},
+  res/.style ={draw, rounded corners=2pt, minimum width=1.5cm, minimum height=1.15cm, align=center, fill=gray!10},
+  op/.style  ={draw, circle, inner sep=0pt, minimum size=0.55cm, fill=white},
   flow/.style={->, thick},
   sub/.style ={font=\footnotesize}
 ]
-% ---------- inputs ----------
-\node[img] (ic) at (0,1.45)  {$\Icap$\\[-1pt]{\scriptsize capture}};
-\node[img] (ig) at (0,-1.45) {$\Igolden$\\[-1pt]{\scriptsize golden}};
-% ---------- shared (Siamese) backbone ----------
-\node[bb] (bbc) at (2.0,1.45)  {Shared\\Backbone\\{\scriptsize YOLOv8s}};
-\node[bb] (bbg) at (2.0,-1.45) {Shared\\Backbone\\{\scriptsize YOLOv8s}};
+% ===================== main pipeline (balanced, full width) =====================
+\node[img] (ic) at (0,1.55)  {$\Icap$\\[-1pt]{\scriptsize capture}};
+\node[img] (ig) at (0,-1.55) {$\Igolden$\\[-1pt]{\scriptsize golden}};
+\node[bb] (bbc) at (2.15,1.55)  {Shared\\Backbone\\{\scriptsize YOLOv8s}};
+\node[bb] (bbg) at (2.15,-1.55) {Shared\\Backbone\\{\scriptsize YOLOv8s}};
 \draw[<->, dashed, gray!70] (bbc.south) -- node[fill=white,inner sep=1pt,sub]{shared $\theta$} (bbg.north);
 \draw[flow] (ic) -- (bbc);
 \draw[flow] (ig) -- (bbg);
-% ---------- capture feature pyramid {P3,P4,P5} ----------
-\node[fc, minimum width=0.95cm] (pc3) at (3.95,1.78) {};
-\node[fc, minimum width=0.66cm] (pc4) at (3.95,1.45) {};
-\node[fc, minimum width=0.42cm] (pc5) at (3.95,1.12) {};
-\node[sub, anchor=west] at (4.5,1.78) {$P_3$};
-\node[sub, anchor=west] at (4.5,1.45) {$P_4$};
-\node[sub, anchor=west] at (4.5,1.12) {$P_5$};
-% ---------- golden feature pyramid ----------
-\node[fg, minimum width=0.95cm] (pg3) at (3.95,-1.12) {};
-\node[fg, minimum width=0.66cm] (pg4) at (3.95,-1.45) {};
-\node[fg, minimum width=0.42cm] (pg5) at (3.95,-1.78) {};
-\node[sub, anchor=west] at (4.5,-1.12) {$P_3$};
-\node[sub, anchor=west] at (4.5,-1.45) {$P_4$};
-\node[sub, anchor=west] at (4.5,-1.78) {$P_5$};
+% capture feature pyramid
+\node[fc, minimum width=1.0cm]  (pc3) at (4.25,1.9)  {};
+\node[fc, minimum width=0.7cm]  (pc4) at (4.25,1.55) {};
+\node[fc, minimum width=0.44cm] (pc5) at (4.25,1.2)  {};
+\node[sub, anchor=west] at (4.85,1.9)  {$P_3$};
+\node[sub, anchor=west] at (4.85,1.55) {$P_4$};
+\node[sub, anchor=west] at (4.85,1.2)  {$P_5$};
+% golden feature pyramid
+\node[fg, minimum width=1.0cm]  (pg3) at (4.25,-1.2)  {};
+\node[fg, minimum width=0.7cm]  (pg4) at (4.25,-1.55) {};
+\node[fg, minimum width=0.44cm] (pg5) at (4.25,-1.9)  {};
+\node[sub, anchor=west] at (4.85,-1.2)  {$P_3$};
+\node[sub, anchor=west] at (4.85,-1.55) {$P_4$};
+\node[sub, anchor=west] at (4.85,-1.9)  {$P_5$};
 \draw[flow] (bbc.east) -- (pc4.west);
 \draw[flow] (bbg.east) -- (pg4.west);
-% ---------- CRFM (applied per scale) ----------
-\node[crfm] (crfm) at (6.4,0) {CRFM\\[1pt]{\footnotesize per scale}\\[1pt]{\footnotesize ($P_3,P_4,P_5$)}};
-\draw[flow] (5.15,1.45) -- (crfm.150);
-\draw[flow] (5.15,-1.45) -- (crfm.210);
-% ---------- neck + head + output ----------
-\node[proc, minimum width=1.3cm, minimum height=1.7cm] (neck) at (8.3,0) {PANet\\Neck};
-\node[proc, minimum width=1.2cm, minimum height=1.45cm] (head) at (9.85,0) {Detect\\Head};
-\node[res] (o) at (11.55,0) {OK\,/\,NG\\detections};
+% CRFM (single block, applied per scale)
+\node[crfm] (crfm) at (7.0,0) {CRFM\\[1pt]{\footnotesize per scale}\\[1pt]{\footnotesize ($P_3,P_4,P_5$)}};
+\draw[flow] (5.45,1.55)  -- (crfm.150);
+\draw[flow] (5.45,-1.55) -- (crfm.210);
+% neck + head + output
+\node[proc, minimum width=1.45cm, minimum height=1.8cm] (neck) at (9.3,0)  {PANet\\Neck};
+\node[proc, minimum width=1.35cm, minimum height=1.5cm] (head) at (11.1,0) {Detect\\Head};
+\node[res] (o) at (13.0,0) {OK\,/\,NG\\detections};
 \draw[flow] (crfm) -- (neck);
 \draw[flow] (neck) -- (head);
 \draw[flow] (head) -- (o);
-% ---------- CRFM detail inset ----------
-\begin{scope}[shift={(0,-3.35)}]
-\draw[dashed, rounded corners] (-0.55,-0.95) rectangle (12.9,0.95);
-\node[sub, anchor=west, font=\footnotesize\bfseries] at (-0.45,0.7) {Cross-Reference Fusion Module (level $\ell$)};
-\node (fcl) at (0.35,0.18)  {$\mathbf{F}^{\ell}_{c}$};
-\node (fgl) at (0.35,-0.4)  {$\mathbf{F}^{\ell}_{g}$};
-\node[op] (sub1) at (1.25,-0.11) {$-$};
-\node[op] (absn) at (2.0,-0.11)  {$|\cdot|$};
-\node[proc, fill=blue!8, align=center, minimum height=0.7cm] (gconv) at (3.6,-0.11) {$1{\times}1$\,conv\,$\to$\,BN\\$\to$\,SiLU\,$\to$\,$1{\times}1$};
-\node[op] (sig) at (5.05,-0.11) {$\sigma$};
-\node[sub] (Ml) at (5.85,-0.11) {$\mathbf{M}^{\ell}$};
-\node[op] (otimes) at (6.9,0.18) {$\otimes$};
-\node[op] (amul) at (8.0,0.18) {$\alpha_\ell$};
-\node[op] (oplus) at (9.1,0.18) {$+$};
-\node[anchor=west] (fused) at (9.7,0.18) {$\mathbf{F}^{\ell}_{\mathrm{fused}}$};
-\draw[flow] (fcl) -- (sub1); \draw[flow] (fgl) -| (sub1);
-\draw[flow] (sub1) -- (absn); \draw[flow] (absn) -- (gconv);
-\draw[flow] (gconv) -- (sig); \draw[flow] (sig) -- (Ml); \draw[flow] (Ml) -- (otimes);
-\draw[flow] (fcl) -| (otimes);
-\draw[flow] (otimes) -- (amul); \draw[flow] (amul) -- (oplus);
-\draw[flow] (fcl.east) to[out=25,in=160] (oplus.north west);
-\draw[flow] (oplus) -- (fused);
+% ===================== CRFM detail inset =====================
+\begin{scope}[shift={(0,-4.05)}]
+\draw[dashed, rounded corners] (-0.65,-1.0) rectangle (13.75,1.55);
+\node[sub, anchor=west, font=\footnotesize\bfseries] at (-0.55,1.28)
+     {Cross-Reference Fusion Module (CRFM), applied per pyramid level $\ell$};
+\node (fcl) at (0.55,0.05)  {$\mathbf{F}^{\ell}_{c}$};
+\node (fgl) at (0.55,-0.6)  {$\mathbf{F}^{\ell}_{g}$};
+\node[op]  (sub1)  at (1.75,-0.28) {$-$};
+\node[op]  (absn)  at (2.7,-0.28)  {$|\cdot|$};
+\node[proc, fill=blue!8, align=center, minimum height=0.75cm] (gconv) at (4.55,-0.28)
+      {$1{\times}1$\,conv\,$\to$\,BN\\$\to$\,SiLU\,$\to$\,$1{\times}1$};
+\node[op]  (sig)   at (6.5,-0.28)  {$\sigma$};
+\node[sub] (Ml)    at (7.4,-0.28)  {$\mathbf{M}^{\ell}$};
+\node[op]  (otimes) at (8.55,-0.28) {$\otimes$};
+\node[op]  (amul)  at (9.85,-0.28) {$\alpha_\ell$};
+\node[op]  (oplus) at (11.15,-0.28) {$+$};
+\node[anchor=west] (fused) at (11.75,-0.28) {$\mathbf{F}^{\ell}_{\mathrm{fused}}$};
+\draw[flow] (fcl) -- (sub1);
+\draw[flow] (fgl) -- (sub1);
+\draw[flow] (sub1) -- (absn);  \draw[flow] (absn) -- (gconv);
+\draw[flow] (gconv) -- (sig);  \draw[flow] (sig) -- (Ml);  \draw[flow] (Ml) -- (otimes);
+\draw[flow] (otimes) -- (amul); \draw[flow] (amul) -- (oplus); \draw[flow] (oplus) -- (fused);
+% F_c skip on a clear top lane (no node crossings, no text): feeds otimes & oplus
+\draw (fcl.north) |- (11.15,0.55);
+\draw[flow] (8.55,0.55)  -- (otimes.north);
+\draw[flow] (11.15,0.55) -- (oplus.north);
 \end{scope}
 \end{tikzpicture}}
 \caption{Architecture of the proposed Dual-Stream YOLO (DS-YOLO). The captured
