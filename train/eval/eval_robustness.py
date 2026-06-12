@@ -302,7 +302,9 @@ def eval_one(yolo,
         if variant == "ds-yolo":
             return _eval_ds_on_tmp(tmp_yaml, ds_context, imgsz)
         else:
-            import tempfile
+            # Do NOT `import tempfile` here: it is already imported at module
+            # scope (line ~38). A local import makes `tempfile` a function-local
+            # name, raising UnboundLocalError at the outer use (line ~296).
             with tempfile.TemporaryDirectory() as _tmp_val:
                 metrics = yolo.val(data=str(tmp_yaml), split="test",
                                    imgsz=imgsz, verbose=False,
