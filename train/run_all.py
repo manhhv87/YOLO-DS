@@ -642,7 +642,20 @@ def main() -> None:
     print(f"[run_all] epochs={EPOCHS}  imgsz={IMGSZ}  batch={BATCH}  size={SIZE}")
     print(f"[run_all] force={args.force}  dry={args.dry_run}")
 
-    for step in args.steps:
+    # Auto-prepend 'resplit' if the chosen steps need dataset_fixed/ but it does
+    # not exist yet (e.g. a fresh Colab session that lost the generated split).
+    # resplit regenerates it from datasets/inhouse/leaky/ (committed to the repo).
+    _needs_fixed = {"train_all", "train_ds", "fraction", "robustness",
+                    "soldef_finetune", "crfm_ablation", "harden", "synth",
+                    "tables", "figures"}
+    steps = list(args.steps)
+    if (set(steps) & _needs_fixed) and "resplit" not in steps \
+            and not exists(DATASET_FIXED / "data.yaml"):
+        print("[run_all] dataset_fixed/ not found — prepending 'resplit' "
+              "(regenerates the source-level split from datasets/inhouse/leaky/).")
+        steps = ["resplit"] + steps
+
+    for step in steps:
         print(f"\n{'='*60}")
         print(f"STEP: {step}")
         print(f"{'='*60}")
