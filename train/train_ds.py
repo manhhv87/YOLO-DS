@@ -139,7 +139,13 @@ class ModelEMA:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--data",       required=True, help="Path to YOLO dataset YAML.")
-    p.add_argument("--golden",     required=True, help="Path to golden reference image.")
+    p.add_argument("--golden",     default=None, help="Path to a SINGLE fixed golden "
+                   "reference image (single-board mode). Required unless --golden-dir.")
+    p.add_argument("--golden-dir", dest="golden_dir", default=None,
+                   help="PER-SAMPLE golden mode: for each image .../images/<name> use "
+                        "the golden .../golden/<name>. Used by the synthetic "
+                        "reference-guided dataset (make_synthetic_refguided.py) where "
+                        "the layout varies per sample so the golden is NECESSARY.")
     p.add_argument("--variant",    default="s", choices=["n", "s", "m", "l", "x"],
                    help="YOLOv8 variant (n/s/m/l/x). Default: s "
                         "(matches the YOLOv8s baselines used in the paper's Table II).")
@@ -246,6 +252,26 @@ def load_golden(path: str, imgsz: int, device: str) -> torch.Tensor:
     return t.to(device)
 
 
+def load_golden_batch(im_files, imgsz: int, device: str) -> torch.Tensor:
+    """Load the PER-SAMPLE golden for each image in a batch -> (B, 3, H, W).
+
+    The golden for `.../<split>/images/<name>` is `.../<split>/golden/<name>`
+    (sibling 'golden' dir, same filename), as written by
+    make_synthetic_refguided.py.
+    """
+    gs = []
+    for f in im_files:
+        fp = Path(f)
+        gp = fp.parent.parent / "golden" / fp.name
+        img = cv2.imread(str(gp), cv2.IMREAD_COLOR)
+        if img is None:
+            raise FileNotFoundError(f"Per-sample golden not found: {gp} (for {f})")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR)
+        gs.append(torch.from_numpy(img).permute(2, 0, 1).float() / 255.0)
+    return torch.stack(gs).to(device)
+
+
 # ---------------------------------------------------------------------------
 # Plot helpers
 # ---------------------------------------------------------------------------
@@ -340,6 +366,7 @@ def evaluate(
     max_det: int = 300,
     save_dir: Optional[Path] = None,
     names: Optional[dict] = None,
+    golden_dir: Optional[str] = None,
 ) -> dict:
     """Compute precision / recall / mAP@0.5 on the validation set."""
     model.eval()
@@ -367,7 +394,9 @@ def evaluate(
             for c in np.unique(targets[targets[:, 0] == si2, 1].cpu().numpy().astype(int)):
                 if 0 <= c < nc:
                     n_imgs_per_cls[c] += 1
-        preds = model(imgs, golden)
+        golden_b = (load_golden_batch(batch["im_file"], imgs.shape[-1], device)
+                    if golden_dir is not None else golden)
+        preds = model(imgs, golden_b)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -650,7 +679,17 @@ def main() -> None:
                                  pin_memory=True)
 
     # ---- Golden ---------------------------------------------------------
-    golden = load_golden(args.golden, args.imgsz, args.device)
+    # Two modes: a single fixed golden (--golden, single-board), or per-sample
+    # goldens loaded by filename at each step (--golden-dir, synthetic
+    # reference-guided dataset where the layout varies per sample).
+    if args.golden_dir is not None:
+        golden = None
+        print(f"[info] PER-SAMPLE golden mode (--golden-dir): each image uses its "
+              f"own golden/<name>")
+    elif args.golden is not None:
+        golden = load_golden(args.golden, args.imgsz, args.device)
+    else:
+        raise SystemExit("train_ds.py: provide either --golden <img> or --golden-dir")
 
     # ---- Optimizer + scheduler -----------------------------------------
     # Split params into 3 groups (matches Ultralytics): BN+bias (no decay), weights (decay)
@@ -795,14 +834,22 @@ def main() -> None:
             # sample independently and pair each flipped capture with a flipped
             # golden (built as a per-sample [B,3,H,W] tensor) so CRFM alignment
             # is preserved; the model accepts a batched golden (ds_yolo forward).
-            golden_step = golden
+            # golden: per-sample (--golden-dir) or the single fixed golden.
+            if args.golden_dir is not None:
+                golden_step = load_golden_batch(batch["im_file"], args.imgsz, args.device)
+            else:
+                golden_step = golden
             if args.fliplr > 0:
                 B = imgs.shape[0]
                 flip_mask = torch.rand(B) < args.fliplr          # CPU, seeded
                 if flip_mask.any():
                     dmask = flip_mask.to(imgs.device)
                     imgs[dmask] = torch.flip(imgs[dmask], dims=[-1])
-                    golden_step = golden.unsqueeze(0).expand(B, -1, -1, -1).clone()
+                    # ensure golden_step is a per-sample [B,3,H,W] batch to flip
+                    if golden_step.dim() == 3:
+                        golden_step = golden_step.unsqueeze(0).expand(B, -1, -1, -1).clone()
+                    else:
+                        golden_step = golden_step.clone()
                     golden_step[dmask] = torch.flip(golden_step[dmask], dims=[-1])
                     # mirror x_center of bboxes whose image was flipped
                     if batch["bboxes"].numel():
@@ -849,7 +896,8 @@ def main() -> None:
         running /= max(n_batches, 1)
         train_loss, box_l, cls_l, dfl_l = [float(x) for x in running]
         val_model = model if args.no_ema else ema.ema
-        val = evaluate(val_model, val_loader, golden, args.device, nc=nc)
+        val = evaluate(val_model, val_loader, golden, args.device, nc=nc,
+                       golden_dir=args.golden_dir)
         scheduler.step()
         lr = optimizer.param_groups[0]["lr"]
 
@@ -902,7 +950,8 @@ def main() -> None:
           f"{n_grad:,} gradients, {_gflops}")
 
     val_final = evaluate(model, val_loader, golden, args.device, nc=nc,
-                         save_dir=save_dir, names=names_map)
+                         save_dir=save_dir, names=names_map,
+                         golden_dir=args.golden_dir)
     _hdr = '%22s' + '%11s' * 6
     _row = '%22s' + '%11i' * 2 + '%11.3g' * 4
     print(_hdr % ('Class', 'Images', 'Instances', 'Box(P', 'R', 'mAP50', 'mAP50-95)'))
@@ -926,7 +975,8 @@ def main() -> None:
         test_val_dir = save_dir.parent / f"val_{save_dir.name}"
         test_val_dir.mkdir(exist_ok=True)
         val_test = evaluate(model, test_loader, golden, args.device, nc=nc,
-                            save_dir=test_val_dir, names=names_map)
+                            save_dir=test_val_dir, names=names_map,
+                            golden_dir=args.golden_dir)
         print(_hdr % ('Class', 'Images', 'Instances', 'Box(P', 'R', 'mAP50', 'mAP50-95)'))
         print(_row % ('all', val_test['n_images'], val_test['n_instances'],
                       val_test['precision'], val_test['recall'],

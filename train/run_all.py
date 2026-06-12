@@ -88,10 +88,13 @@ ERASING        = "0.0"   # disabled: detection baselines get none (see note abov
 # loop's auto-shrink heuristic otherwise picks ~50 on short runs, giving the
 # 'ours' variants a much faster EMA than the baselines.
 EMA_TAU        = "2000"
-# FREEZE_CRFM: freeze CRFM for the first 70 % of epochs so DFL converges
-# like the RGB baseline before CRFM learning starts (phase-1/2 training).
-# Set to 0 to disable (single-phase training).
-FREEZE_CRFM_FRAC = 0.70
+# FREEZE_CRFM: DISABLED (0.0). Freezing CRFM for the first 70% of epochs
+# GUARANTEES alpha stays 0 until the backbone has already converged on the
+# capture alone — on this saturated single-board task that left alpha~0 for the
+# whole run (CRFM never learned, DS-YOLO == RGB). To give CRFM any chance to
+# learn, it must train from epoch 1 so its gradient exists while the task is
+# still unsolved. (Re-enable only if you confirm CRFM still learns with it on.)
+FREEZE_CRFM_FRAC = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +245,11 @@ def step_fraction(dry: bool, force: bool) -> None:
     """Data-fraction study (H3): train rgb + ds-yolo at 25 / 50 / 100 %."""
     data_rgb = DATASET_FIXED / "data.yaml"
 
-    # 100% is already covered by step_train_all (rgb) and step_train_ds (ds_yolo)
-    # plot_data_fraction.py reads runs/detect/rgb/ and runs/ds_yolo/ds_yolo/ for 100%
-    for frac in [0.25, 0.50]:
+    # 100% is already covered by step_train_all (rgb) and step_train_ds (ds_yolo).
+    # 10% added: the very-low-data regime is where the golden reference should
+    # actually help (too few images for the capture-only model to memorise the
+    # fixed layout) — this is the regime to watch the CRFM alpha and DS-vs-RGB gap.
+    for frac in [0.10, 0.25, 0.50]:
         frac_tag = str(int(frac * 100))
         for seed in SEEDS:
             sfx = "" if seed == 0 else f"_s{seed}"
@@ -409,6 +414,63 @@ def step_crfm_ablation(dry: bool, force: bool) -> None:
         dry=dry)
 
 
+def step_harden(dry: bool, force: bool) -> None:
+    """Inject controlled defects into dataset_fixed -> dataset_hard.
+
+    Adds missing/shift/rotate NG instances (and keeps the originals) per split,
+    breaking the mAP ceiling and balancing the OK/NG classes. NOTE: on a SINGLE
+    board this does NOT make the golden necessary (a capture-only model can
+    still memorise the fixed layout) — use step 'synth' for that.
+    """
+    hard = HERE / "dataset_hard"
+    if force or not exists(hard / "data.yaml"):
+        for split in ["train", "val", "test"]:
+            run([sys.executable, "data/inject_defects.py",
+                 "--images", str(DATASET_FIXED / split / "images"),
+                 "--labels", str(DATASET_FIXED / split / "labels"),
+                 "--out",    str(hard / split),
+                 "--copies", "2", "--per-image", "3", "--include-original",
+                 "--seed",   "0"], dry=dry)
+        if not dry:
+            (hard / "data.yaml").write_text(
+                f"path: {hard.resolve().as_posix()}\n"
+                f"train: train/images\nval: val/images\ntest: test/images\n"
+                f"names:\n  0: OK\n  1: NG\nnc: 2\n", encoding="utf-8")
+            print(f"[harden] wrote {hard / 'data.yaml'}")
+    # Train RGB + DS-YOLO on the harder set (single fixed golden).
+    if force or not exists(RUNS_DETECT / "rgb_hard" / "weights" / "best.pt"):
+        _train_variant("rgb", hard / "data.yaml", name="rgb_hard", dry=dry)
+    if force or not exists(RUNS_DS / "ds_yolo_hard" / "weights" / "best.pt"):
+        _train_ds("ds_yolo_hard", fusion="crfm", dry=dry, data=hard / "data.yaml")
+
+
+def step_synth(dry: bool, force: bool) -> None:
+    """Synthetic REFERENCE-GUIDED benchmark: the layout varies per sample so the
+    golden is NECESSARY (a capture-only model cannot tell a missing-NG slot from
+    a legitimately-absent one). This is the decisive test of whether CRFM can
+    learn: watch the [CRFM alpha] log and whether DS-YOLO (--golden-dir) beats
+    the RGB baseline (which never sees the reference).
+    """
+    synth = HERE / "dataset_synth"
+    if force or not exists(synth / "data.yaml"):
+        run([sys.executable, "data/make_synthetic_refguided.py",
+             "--images", str(DATASET_FIXED / "train" / "images"),
+             "--labels", str(DATASET_FIXED / "train" / "labels"),
+             "--out", str(synth), "--n", "1500",
+             "--keep", "0.7", "--defect-rate", "0.25", "--seed", "0"], dry=dry)
+    # RGB baseline (capture only — expected to struggle on missing-NG).
+    if force or not exists(RUNS_DETECT / "rgb_synth" / "weights" / "best.pt"):
+        _train_variant("rgb", synth / "data.yaml", name="rgb_synth", dry=dry)
+    # DS-YOLO with PER-SAMPLE golden (the reference it needs).
+    if force or not exists(RUNS_DS / "ds_yolo_synth" / "weights" / "best.pt"):
+        _train_ds("ds_yolo_synth", fusion="crfm", dry=dry,
+                  data=synth / "data.yaml",
+                  extra=["--golden-dir", str(synth)])
+    print("\n[synth] Compare runs/detect/rgb_synth vs runs/ds_yolo/ds_yolo_synth.")
+    print("[synth] If DS-YOLO >> RGB and [CRFM alpha] grew, CRFM works when the "
+          "golden is required.")
+
+
 def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for uniform calling convention; tables always re-run
     """Print all LaTeX table rows from aggregated results."""
     print("\n" + "=" * 60)
@@ -529,7 +591,7 @@ ALL_STEPS = [
     "tables", "figures",
 ]
 # Optional steps: selectable via --steps but NOT run by the default (no-arg) run.
-OPTIONAL_STEPS = ["crfm_ablation"]
+OPTIONAL_STEPS = ["crfm_ablation", "harden", "synth"]
 
 STEP_FN = {
     "resplit":          step_resplit,
@@ -540,6 +602,8 @@ STEP_FN = {
     "soldef_val":       step_soldef_val,
     "soldef_finetune":  step_soldef_finetune,
     "crfm_ablation":    step_crfm_ablation,
+    "harden":           step_harden,
+    "synth":            step_synth,
     "tables":           step_tables,
     "figures":          step_figures,
 }
