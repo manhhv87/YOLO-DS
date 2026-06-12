@@ -129,11 +129,31 @@ def main() -> None:
         (out / s / "labels").mkdir(parents=True, exist_ok=True)
         (out / s / "golden").mkdir(parents=True, exist_ok=True)
 
+    # SOURCE-LEVEL split: assign each raw capture to exactly ONE split, so the
+    # same source board never appears in more than one of train/val/test.
+    order_src = list(range(len(srcs)))
+    rng.shuffle(order_src)
+    n_test = max(1, int(round(args.test_frac * len(srcs))))
+    n_val = max(1, int(round(args.val_frac * len(srcs))))
+    src_by_split = {"train": [], "val": [], "test": []}
+    for rank, k in enumerate(order_src):
+        s = "test" if rank < n_test else ("val" if rank < n_test + n_val else "train")
+        src_by_split[s].append(srcs[k])
+    if not src_by_split["train"]:
+        raise ValueError("Too few labelled source captures for a source-level "
+                         "split; lower --val-frac/--test-frac or add images.")
+    # Assign each sample to a split (proportional); its source is drawn only from
+    # that split's disjoint pool.
+    sample_split = []
+    for s in ("train", "val", "test"):
+        sample_split += [s] * max(1, int(round(splits[s] * args.n)))
+    rng.shuffle(sample_split)
+
     n_ng = n_ok = 0
-    for i in range(args.n):
-        u = rng.random()
-        split = "train" if u < splits["train"] else ("val" if u < splits["train"] + splits["val"] else "test")
-        src = srcs[int(rng.integers(len(srcs)))]
+    for i in range(len(sample_split)):
+        split = sample_split[i]
+        pool = src_by_split[split]
+        src = pool[int(rng.integers(len(pool)))]
         img0 = cv2.imread(str(src), cv2.IMREAD_COLOR)
         if img0 is None:
             continue
