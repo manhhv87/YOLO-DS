@@ -250,26 +250,27 @@ homography pre-aligns them when this assumption is relaxed
 tolerates the small residual drift that remains after registration.
 
 \paragraph*{Hypotheses.}
-We test three hypotheses experimentally:
-\begin{description}
-    \item[\textbf{H1 (defect-dependence)}] The value of the golden reference
-    depends on the defect type. It is redundant when defects are locally
-    appearance-detectable in the capture (the capture-only baseline already
-    solves the task), but necessary when defects are reference-dependent, i.e.\ a
-    component present and locally valid yet missing or misplaced relative to the
-    golden, where appearance-only detection cannot decide OK versus NG.
-    \item[\textbf{H2 (self-regulating gate)}] The CRFM's learnable scalar
-    $\alpha_\ell$ is self-regulating: it remains $\approx\!0$ (CRFM inactive, so
-    DS-YOLO reduces exactly to the YOLOv8s baseline) when the reference is
-    redundant, and increases when the reference is necessary. The architecture
-    therefore incurs no penalty when the golden is uninformative and exploits it
-    when it is informative.
-    \item[\textbf{H3 (not data efficiency)}] On a single fixed layout a
-    capture-only detector saturates even with limited training data because it
-    can memorise the single fixed layout; the reference does not improve data
-    efficiency in this regime. The benefit of reference fusion is governed by
-    defect type (H1), not by training-set size.
-\end{description}
+We test three hypotheses experimentally.
+
+\noindent\textbf{H1 (defect-dependence).} The value of the golden reference
+depends on the defect type. It is redundant when defects are locally
+appearance-detectable in the capture (the capture-only baseline already solves
+the task), but necessary when defects are reference-dependent, i.e.\ a component
+present and locally valid yet missing or misplaced relative to the golden, where
+appearance-only detection cannot decide OK versus NG.
+
+\noindent\textbf{H2 (self-regulating gate).} The CRFM's learnable scalar
+$\alpha_\ell$ is self-regulating: it remains $\approx\!0$ (CRFM inactive, so
+DS-YOLO reduces exactly to the YOLOv8s baseline) when the reference is redundant,
+and increases when the reference is necessary. The architecture therefore incurs
+no penalty when the golden is uninformative and exploits it when it is
+informative.
+
+\noindent\textbf{H3 (not data efficiency).} On a single fixed layout a
+capture-only detector saturates even with limited training data because it can
+memorise the single fixed layout; the reference does not improve data efficiency
+in this regime. The benefit of reference fusion is governed by defect type (H1),
+not by training-set size.
 
 %==============================================================================
 \section{Method: Dual-Stream YOLO}
@@ -575,8 +576,8 @@ On the in-house board the capture-only RGB baseline already saturates and DS-YOL
 performs on par with it (Table~\ref{tab:inhouse}). Across
 $10$--$50\%$ training-data fractions (mean$\pm$std over three seeds) the two are
 equal within run-to-run variance at mAP@0.5${\approx}0.99$, and on the more
-demanding mAP@0.5:0.95 the gap is likewise within seed noise. The fusion gate is
-inactive
+demanding mAP@0.5:0.95 the gap is likewise within seed noise; injecting harder
+defects on the same board does not change this. The fusion gate is inactive
 throughout ($|\alpha_\ell|\!<\!10^{-3}$ at convergence for all three scales), so
 DS-YOLO is equivalent to the YOLOv8s baseline and incurs no accuracy regression.
 Under inference-time translation noise up to $20$\,px, with labels warped along
@@ -605,8 +606,9 @@ reference.
 
 \begin{table}[t]
 \caption{Regime~1 (in-house board, reference redundant): RGB vs.\ DS-YOLO,
-mean$\pm$std over three seeds. The two coincide within seed noise and the fusion
-gate stays $\alpha_\ell\!\approx\!0$.}
+mean$\pm$std over three seeds (the ``harder injected defects'' row is a single
+run). The two coincide within seed noise and the fusion gate stays
+$\alpha_\ell\!\approx\!0$.}
 \label{tab:inhouse}
 \centering\footnotesize
 \resizebox{\columnwidth}{!}{\begin{tabular}{@{}l c c c c@{}}
@@ -618,6 +620,7 @@ gate stays $\alpha_\ell\!\approx\!0$.}
 $10\%$ train data        & $0.991{\pm}.002$ & $0.989{\pm}.003$ & $0.813{\pm}.008$ & $0.805{\pm}.008$\\
 $25\%$ train data        & $0.986{\pm}.003$ & $0.983{\pm}.008$ & $0.821{\pm}.003$ & $0.814{\pm}.007$\\
 $50\%$ train data        & $0.991{\pm}.001$ & $0.986{\pm}.006$ & $0.827{\pm}.009$ & $0.815{\pm}.006$\\
+harder injected defects  & $0.973$          & $0.968$          & $0.808$          & $0.805$\\
 \bottomrule
 \end{tabular}}
 \end{table}
