@@ -78,7 +78,7 @@ fractions, mean over three seeds) and the gate remains inactive. On a controlled
 synthetic benchmark of reference-dependent defects (a component present and
 locally valid but missing or misplaced relative to the golden), which an
 appearance-only detector cannot resolve by construction, the gate becomes active
-and DS-YOLO raises recall from $0.75$ to $0.98$, confirming that the CRFM exploits
+and DS-YOLO raises recall from $0.73$ to $0.97$, confirming that the CRFM exploits
 the reference when it is informative. The detector runs on a working SMT cell in
 which a vision server returns OK/NG verdicts to a Mitsubishi MELSEC-Q PLC over
 OPC~UA, and the PLC sorts boards with two articulated robots over CC-Link.
@@ -575,8 +575,8 @@ On the in-house board the capture-only RGB baseline already saturates and DS-YOL
 performs on par with it (Table~\ref{tab:inhouse}). Across
 $10$--$50\%$ training-data fractions (mean$\pm$std over three seeds) the two are
 equal within run-to-run variance at mAP@0.5${\approx}0.99$, and on the more
-demanding mAP@0.5:0.95 the gap is likewise within seed noise; injecting harder
-defects on the same board does not change this. The fusion gate is inactive
+demanding mAP@0.5:0.95 the gap is likewise within seed noise. The fusion gate is
+inactive
 throughout ($|\alpha_\ell|\!<\!10^{-3}$ at convergence for all three scales), so
 DS-YOLO is equivalent to the YOLOv8s baseline and incurs no accuracy regression.
 Under inference-time translation noise up to $20$\,px, with labels warped along
@@ -591,12 +591,13 @@ missing-NG slot and a legitimately absent slot are pixel-identical in the captur
 so the recall of the RGB baseline is capped before any training. The experiment is
 therefore not a performance comparison but a test of whether the gate becomes
 active and the CRFM exploits a reference it provably requires
-(Table~\ref{tab:synth}). The RGB baseline plateaus at mAP@0.5$=0.86$, recall
-$=0.75$ (its by-design ceiling; the residual recall comes from the
+(Table~\ref{tab:synth}). The RGB baseline plateaus at mAP@0.5$=0.85$, recall
+$=0.73$ (its by-design ceiling; the residual recall comes from the
 appearance-visible shift defects). DS-YOLO's gate becomes active ($\alpha_\ell$
-increases from its zero initialisation) and the model improves detection to
-mAP@0.5$=0.99$, recall $=0.98$, with the gain concentrated on the missing
-components that carry no local cue. Since at $\alpha_\ell\!=\!0$ DS-YOLO's forward
+grows to $-0.19$, $-0.67$ and $-0.01$ at $P_3,P_4,P_5$, against
+$|\alpha_\ell|\!<\!10^{-3}$ on the in-house board) and the model improves
+detection to mAP@0.5$=0.99$, recall $=0.97$, with the gain concentrated on the
+missing components that carry no local cue. Since at $\alpha_\ell\!=\!0$ DS-YOLO's forward
 pass is architecturally identical to single-stream YOLOv8s (BatchNorm frozen on
 the golden pass), the architecture cannot exceed the capture-only baseline other
 than through the CRFM, so the gate activation indicates that the module uses the
@@ -604,9 +605,8 @@ reference.
 
 \begin{table}[t]
 \caption{Regime~1 (in-house board, reference redundant): RGB vs.\ DS-YOLO,
-mean$\pm$std over three seeds (the ``harder injected defects'' row is a single
-run). The two coincide within seed noise and the fusion gate stays
-$\alpha_\ell\!\approx\!0$.}
+mean$\pm$std over three seeds. The two coincide within seed noise and the fusion
+gate stays $\alpha_\ell\!\approx\!0$.}
 \label{tab:inhouse}
 \centering\footnotesize
 \resizebox{\columnwidth}{!}{\begin{tabular}{@{}l c c c c@{}}
@@ -615,10 +615,9 @@ $\alpha_\ell\!\approx\!0$.}
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}
  & RGB & DS-YOLO & RGB & DS-YOLO\\
 \midrule
-$10\%$ train data        & $0.989{\pm}.001$ & $0.991{\pm}.002$ & $0.815{\pm}.006$ & $0.803{\pm}.006$\\
-$25\%$ train data        & $0.988{\pm}.003$ & $0.987{\pm}.001$ & $0.822{\pm}.007$ & $0.816{\pm}.005$\\
-$50\%$ train data        & $0.991{\pm}.002$ & $0.988{\pm}.002$ & $0.814{\pm}.013$ & $0.817{\pm}.002$\\
-harder injected defects  & $0.969$          & $0.970$          & $0.796$          & $0.810$\\
+$10\%$ train data        & $0.991{\pm}.002$ & $0.989{\pm}.003$ & $0.813{\pm}.008$ & $0.805{\pm}.008$\\
+$25\%$ train data        & $0.986{\pm}.003$ & $0.983{\pm}.008$ & $0.821{\pm}.003$ & $0.814{\pm}.007$\\
+$50\%$ train data        & $0.991{\pm}.001$ & $0.986{\pm}.006$ & $0.827{\pm}.009$ & $0.815{\pm}.006$\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -635,8 +634,8 @@ ${\sim}1{,}500$ samples.}
 \toprule
 \textbf{Method} & \textbf{Prec.} & \textbf{Recall} & \textbf{mAP@0.5} & \textbf{mAP@0.5:0.95}\\
 \midrule
-YOLOv8s (RGB, capture only)   & $0.920$ & $0.748$ & $0.864$ & $0.790$\\
-\textbf{DS-YOLO (ours)}       & $\mathbf{0.996}$ & $\mathbf{0.980}$ & $\mathbf{0.993}$ & $\mathbf{0.969}$\\
+YOLOv8s (RGB, capture only)   & $0.925$ & $0.733$ & $0.855$ & $0.721$\\
+\textbf{DS-YOLO (ours)}       & $\mathbf{0.990}$ & $\mathbf{0.971}$ & $\mathbf{0.992}$ & $\mathbf{0.863}$\\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -694,8 +693,8 @@ the reference provides a measurable benefit. On appearance-detectable defects fr
 a single fixed board the reference is redundant and DS-YOLO performs on par
 with the RGB baseline (the fusion gate stays $\approx\!0$); on
 reference-dependent defects (a component present but missing or misplaced relative
-to the golden) it is necessary, and DS-YOLO improves recall by $+23$ points
-(mAP@0.5 $0.86\!\rightarrow\!0.99$) over an appearance-only detector, with the gate
+to the golden) it is necessary, and DS-YOLO improves recall by $+24$ points
+(mAP@0.5 $0.85\!\rightarrow\!0.99$) over an appearance-only detector, with the gate
 active. The system is deployed on a
 real SMT cell integrating a Mitsubishi PLC, two articulated robots and a GigE
 camera over CC-Link and OPC~UA, adding only one extra backbone pass per board.
