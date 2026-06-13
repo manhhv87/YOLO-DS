@@ -2,48 +2,61 @@
 
 Toan bo code train va eval cho paper. UI nam o [`../ui/`](../ui/).
 
+Paper so sanh **hai model**: RGB baseline (YOLOv8s mot luong) vs **DS-YOLO**
+(Siamese YOLOv8s + Cross-Reference Fusion Module, CRFM). Ket qua phu thuoc
+**loai khuyet tat** (defect-dependent), the hien qua hai che do:
+
+- **In-house (reference du thua):** mot board co dinh -> capture-only da bao hoa
+  -> DS-YOLO ngang RGB, cong CRFM `alpha ~ 0`.
+- **Synthetic (reference can thiet):** layout ngau nhien moi mau, golden rieng
+  tung mau -> capture-only khong giai duoc missing/shift -> cong kich hoat.
+
 ## Thu muc
 
 ```
 train/
 ├── README.md               file nay
 ├── run_all.py              chay tat ca buoc tu dong (khuyen dung)
-├── train.py                train RGB / Diff-only / Stack6 / RG-YOLO
-├── train_ds.py             train F-Sub va DS-YOLO (dual-stream loop)
+├── train.py                train RGB baseline (Ultralytics pipeline)
+├── train_ds.py             train DS-YOLO (dual-stream loop + CRFM, per-sample golden)
 │
 ├── models/
-│   ├── ds_yolo.py          kien truc DS-YOLOv8m: backbone + CRFM + neck + head
-│   └── model_4ch.py        patch first Conv2d cua YOLOv8 sang N kenh (RG-YOLO/Stack6)
+│   └── ds_yolo.py          kien truc DS-YOLOv8s: shared backbone + CRFM + neck + head
 │
 ├── data/
-│   ├── align.py            ORB + RANSAC homography alignment
-│   ├── resplit_inhouse.py  fix data leakage: re-split theo source image level
-│   ├── build_4ch_dataset.py  tao dataset 4-ch (RGB+diff) cho RG-YOLO
-│   ├── convert_soldef_to_yolo.py  chuyen SolDef_A JSON -> YOLO (da xong)
-│   └── remap_to_binary.py  8-class -> 2-class (da xong, khong can chay lai)
+│   ├── resplit_inhouse.py        fix data leakage: re-split theo SOURCE board
+│   ├── make_synthetic_refguided.py  sinh benchmark reference-dependent (golden rieng/mau)
+│   ├── make_fraction_subset.py   tao subset seed-co-dinh dung chung cho RGB & DS (H3)
+│   ├── inject_defects.py         tiem khuyet tat (remove/shift/rotate) pha tran mAP
+│   ├── convert_soldef_to_yolo.py SolDef_A JSON -> YOLO (da xong)
+│   └── remap_to_binary.py        8-class -> 2-class (da xong)
 │
 ├── eval/
-│   ├── eval_robustness.py  Table V: eval rgb+rg-yolo duoi alignment perturbation
-│   └── aggregate_results.py  xuat LaTeX rows cho Table II/III/IV/V
+│   ├── aggregate_results.py  xuat LaTeX rows (mean+/-std over seeds)
+│   ├── verify_evaluator.py   cross-check evaluator tuy chinh == yolo.val (tol 0.002)
+│   ├── eval_robustness.py    mAP vs nhieu dich chuyen alignment (sigma_t)
+│   ├── plot_data_fraction.py / plot_qual_figures.py  hinh ve
 │
 ├── datasets/
 │   ├── inhouse/
 │   │   ├── leaky/          Roboflow export goc — KHONG DUNG TRUC TIEP
 │   │   └── golden/         golden_ok.bmp, golden2.bmp, golden_ng.png
-│   └── soldef/             SolDef_A da convert sang YOLO (300/64/64)
+│   └── soldef/             SolDef_A da convert sang YOLO
 │
-├── dataset_fixed/          [TU DONG TAO] resplit_inhouse.py output
-├── dataset_rg/             [TU DONG TAO] build_4ch_dataset.py output
-└── runs/                   [TU DONG TAO] training outputs
-    ├── detect/             Ultralytics variants (rgb, diff-only, stack6, rg-yolo)
-    ├── ds_yolo/            DS-YOLO + F-Sub (train_ds.py)
-    ├── fraction/           data-fraction study (25%/50%/100%)
-    └── robustness/         robustness CSVs (eval_robustness.py)
+├── dataset_fixed/          [TU DONG TAO] resplit_inhouse.py output (gitignored)
+├── dataset_synth/          [TU DONG TAO] make_synthetic_refguided.py output (gitignored)
+└── runs/                   [TU DONG TAO] training outputs (gitignored)
+    ├── detect/             RGB baseline (rgb, rgb_synth, rgb_<frac>, rgb_hard, ...)
+    ├── ds_yolo/            DS-YOLO (ds_yolo, ds_yolo_synth, ds_yolo_hard)
+    └── fraction/           data-fraction study (10/25/50%)
 ```
+
+Config mac dinh trong `run_all.py`: `SIZE="s"`, `IMGSZ=640`, `EPOCHS=100`,
+`BATCH=4`, `SEEDS=[0]` (multi-seed qua `--seeds 0 1 2`).
 
 ---
 
-## Chay nhanh — tat ca tu dong
+## Chay nhanh — tu dong
 
 ```bash
 cd train
@@ -51,185 +64,99 @@ cd train
 # Kiem tra lenh (khong chay that)
 python run_all.py --dry-run
 
-# Chay tat ca tu dau (~3-5 ngay)
+# Chay mac dinh: resplit -> train_all (rgb) -> train_ds (ds-yolo) -> fraction
+#               -> robustness -> soldef_val -> soldef_finetune -> tables -> figures
 python run_all.py
 
-# Chi chay mot so buoc (neu dataset da co san)
-python run_all.py --steps train_all train_ds fraction robustness soldef_val tables
+# Multi-seed (Bang ket qua mean+/-std)
+python run_all.py --steps train_all train_ds fraction --seeds 0 1 2
+
+# Buoc tuy chon (KHONG chay mac dinh):
+#   synth          benchmark reference-dependent (kiem tra cong CRFM kich hoat)
+#   harden         tiem khuyet tat kho hon len cung 1 board
+#   crfm_ablation  ablation thiet ke CRFM (no-gate / fixed-alpha / fuse-scales)
+python run_all.py --steps synth --force
 ```
+
+`--force` ghi de output cu (tao lai dataset + train lai).
 
 ---
 
 ## Chay tung buoc thu cong
 
-### Buoc 1: Chuan bi dataset
+### 1. Chuan bi dataset (in-house)
 
 ```bash
-cd train
-
-# 1a. Fix data leakage: re-split theo source identity
+# Fix data leakage: re-split theo SOURCE board (53/11/11 sources -> 147/11/11 imgs)
 python data/resplit_inhouse.py \
-    --src       datasets/inhouse/leaky \
-    --dst       dataset_fixed \
-    --val-frac  0.15 \
-    --test-frac 0.15 \
-    --seed      0
-# Ket qua: dataset_fixed/{train,val,test}/{images,labels}/ + data.yaml
-
-# 1b. Tao 4-channel dataset cho RG-YOLO
-python data/build_4ch_dataset.py \
-    --src    dataset_fixed \
-    --dst    dataset_rg \
-    --golden datasets/inhouse/golden/golden_ok.bmp
-# Ket qua: dataset_rg/{train,val,test}/{images,labels}/ + rg-yolo.yaml
+    --src datasets/inhouse/leaky --dst dataset_fixed \
+    --val-frac 0.15 --test-frac 0.15 --seed 0
 ```
 
-### Buoc 2: Train 6 variants (Table II)
-
-**LUU Y**: `f-sub` va `ds-yolo` PHAI dung `train_ds.py`, KHONG dung `train.py`.
+### 2. Train hai model (Bang ket qua chinh)
 
 ```bash
-# [2a] RGB baseline -> runs/detect/rgb/
-python train.py --variant rgb --size m \
-    --data dataset_fixed/data.yaml \
-    --epochs 60 --imgsz 640 --batch 4
+# RGB baseline -> runs/detect/rgb/
+python train.py --variant rgb --size s \
+    --data dataset_fixed/data.yaml --epochs 100 --imgsz 640 --batch 4
 
-# [2b] Diff-only -> runs/detect/diff-only/
-python train.py --variant diff-only --size m \
-    --data dataset_fixed/data.yaml \
-    --epochs 60 --imgsz 640 --batch 4
-
-# [2c] Stack6 (6-ch: RGB+Golden) -> runs/detect/stack6/
-python train.py --variant stack6 --size m \
-    --data dataset_fixed/data.yaml \
-    --epochs 60 --imgsz 640 --batch 4
-
-# [2d] RG-YOLO (4-ch: RGB+Diff) -> runs/detect/rg-yolo/
-python train.py --variant rg-yolo --size m \
-    --data dataset_rg/rg-yolo.yaml \
-    --epochs 60 --imgsz 640 --batch 4
-
-# [2e] F-Sub (feature subtraction ablation) -> runs/ds_yolo/f_sub/
-#      PHAI dung train_ds.py --fusion sub
+# DS-YOLO (CRFM, golden co dinh in-house) -> runs/ds_yolo/ds_yolo/
 python train_ds.py \
-    --data     dataset_fixed/data.yaml \
-    --golden   datasets/inhouse/golden/golden_ok.bmp \
-    --variant  m \
-    --fusion   sub \
-    --epochs   60 --imgsz 640 --batch 4 \
-    --name     f_sub \
-    --save-dir runs/ds_yolo
-
-# [2f] DS-YOLO (main contribution: CRFM) -> runs/ds_yolo/ds_yolo/
-python train_ds.py \
-    --data     dataset_fixed/data.yaml \
-    --golden   datasets/inhouse/golden/golden_ok.bmp \
-    --variant  m \
-    --fusion   crfm \
-    --epochs   60 --imgsz 640 --batch 4 \
-    --name     ds_yolo \
-    --save-dir runs/ds_yolo
-```
-
-### Buoc 3: Data-fraction study (Figure H3)
-
-```bash
-# RGB tai 25% / 50% -> runs/detect/rgb_25pct/, rgb_50pct/
-python train.py --variant rgb --size m \
-    --data dataset_fixed/data.yaml --epochs 60 --imgsz 640 --batch 4 \
-    --data-fraction 0.25 --name rgb_25pct
-python train.py --variant rgb --size m \
-    --data dataset_fixed/data.yaml --epochs 60 --imgsz 640 --batch 4 \
-    --data-fraction 0.50 --name rgb_50pct
-
-# DS-YOLO tai 25% / 50% -> runs/fraction/ds_yolo_25pct/, ds_yolo_50pct/
-python train_ds.py \
-    --data dataset_fixed/data.yaml \
-    --golden datasets/inhouse/golden/golden_ok.bmp \
-    --variant m --fusion crfm --epochs 60 --imgsz 640 --batch 4 \
-    --data-fraction 0.25 --name ds_yolo_25pct --save-dir runs/fraction
-python train_ds.py \
-    --data dataset_fixed/data.yaml \
-    --golden datasets/inhouse/golden/golden_ok.bmp \
-    --variant m --fusion crfm --epochs 60 --imgsz 640 --batch 4 \
-    --data-fraction 0.50 --name ds_yolo_50pct --save-dir runs/fraction
-# 100% = Buoc 2f (ds_yolo day du), khong can train lai
-```
-
-### Buoc 4: Robustness study (Table V)
-
-```bash
-# Can xong Buoc 2a (rgb) va 2d (rg-yolo) truoc
-
-python eval/eval_robustness.py \
-    --variant rgb \
-    --weights runs/detect/rgb/weights/best.pt \
     --data    dataset_fixed/data.yaml \
     --golden  datasets/inhouse/golden/golden_ok.bmp \
-    --out     runs/robustness/rgb.csv \
-    --imgsz   640
-
-python eval/eval_robustness.py \
-    --variant rg-yolo \
-    --weights runs/detect/rg-yolo/weights/best.pt \
-    --data    dataset_rg/rg-yolo.yaml \
-    --golden  datasets/inhouse/golden/golden_ok.bmp \
-    --out     runs/robustness/rg-yolo.csv \
-    --imgsz   640
+    --variant s --fusion crfm \
+    --epochs 100 --imgsz 640 --batch 4 \
+    --name ds_yolo --save-dir runs/ds_yolo
 ```
 
-### Buoc 5: External validation tren SolDef_A
+Recipe (SGD@1e-2 + cosine + warmup3 + wd5e-4) **dong nhat** giua `train.py` va
+`train_ds.py` de so sanh chi co lap CRFM. DS-YOLO `alpha` khoi tao 0 (identity-
+at-init); xem dong `[CRFM alpha]` trong log.
+
+### 3. Data-fraction study (H3)
 
 ```bash
-python train.py --variant rgb --size m \
-    --data   datasets/soldef/data.yaml \
-    --epochs 60 --imgsz 640 --batch 4 \
-    --name   rgb_soldef
-# Ket qua -> runs/detect/rgb_soldef/test_results.json
+# Dung subset seed-co-dinh CHUNG cho ca RGB va DS o moi fraction
+python run_all.py --steps fraction --seeds 0 1 2
+# -> runs/detect/rgb_<10|25|50>pct[_sN]/  va  runs/fraction/ds_yolo_<...>pct[_sN]/
 ```
 
-### Buoc 6: Tong hop so lieu (LaTeX)
+### 4. Synthetic reference-dependent benchmark (cong CRFM kich hoat)
 
 ```bash
-# Table II
-python eval/aggregate_results.py main \
-    --runs    runs/detect \
-    --ds-runs runs/ds_yolo \
-    --variants rgb diff-only stack6 rg-yolo f-sub ds-yolo
+python run_all.py --steps synth --force
+# Sinh dataset_synth (board-disjoint, golden rieng/mau), train rgb_synth + ds_yolo_synth.
+# Kiem: [CRFM alpha] tang > 0; doc 2 file test_results.json.
+python eval/verify_evaluator.py \
+    --weights runs/detect/rgb_synth/weights/best.pt \
+    --data dataset_synth/data.yaml --imgsz 640 --split test
+```
 
-# Table III — per-class OK/NG (can GPU)
-python eval/aggregate_results.py perclass \
-    --runs     runs/detect \
-    --ds-runs  runs/ds_yolo \
-    --variants rgb rg-yolo ds-yolo \
-    --data     dataset_fixed/data.yaml \
-    --golden   datasets/inhouse/golden/golden_ok.bmp \
-    --imgsz    640 --split test
+### 5. Robustness (sigma_t)
 
-# Table IV — latency (RGB va RG-YOLO)
-python eval/aggregate_results.py latency \
+```bash
+python eval/eval_robustness.py --variant rgb \
     --weights runs/detect/rgb/weights/best.pt \
-    --imgsz 640 --channels 3 --runs-count 200
-python eval/aggregate_results.py latency \
-    --weights runs/detect/rg-yolo/weights/best.pt \
-    --imgsz 640 --channels 4 --runs-count 200
-# DS-YOLO latency: do thu cong (xem PLAN.md Buoc 7c)
+    --data dataset_fixed/data.yaml \
+    --golden datasets/inhouse/golden/golden_ok.bmp \
+    --out runs/robustness/rgb.csv --imgsz 640
+```
 
-# Table V — robustness
-python eval/aggregate_results.py robust \
-    --csvs   runs/robustness/rgb.csv runs/robustness/rg-yolo.csv \
-    --labels "RGB baseline" "RG-YOLO"
+### 6. Tong hop so lieu (LaTeX, mean+/-std)
+
+```bash
+python eval/aggregate_results.py mainstats \
+    --runs runs/detect --ds-runs runs/ds_yolo \
+    --variants rgb ds-yolo --seeds 0 1 2
 ```
 
 ---
 
-## Deploy lên UI
+## Deploy len UI
 
 ```bash
 mkdir -p ../ui/runs/ds_yolo/weights
 cp runs/ds_yolo/ds_yolo/weights/best.pt ../ui/runs/ds_yolo/weights/best.pt
-
-# Chay UI voi DS-YOLO backend
 USE_DS_YOLO=1 python ../ui/main.py
 ```
 
@@ -239,8 +166,9 @@ USE_DS_YOLO=1 python ../ui/main.py
 
 | Dieu | Chi tiet |
 |------|----------|
-| **f-sub phai dung train_ds.py** | `train.py` khong co variant `f-sub`. Phai dung `train_ds.py --fusion sub` |
-| **imgsz phai la 640** | Tat ca script dung `--imgsz 640`. Khong dung 1024 (lech voi run_all.py) |
-| **golden dung cho in-house** | `golden_ok.bmp` chi dung cho in-house dataset. SolDef_A khong co golden |
-| **Val/Test khong augment** | Chi train split co augmented images; val/test chi dung 1 anh per source |
-| **Uu tien test_results.json** | aggregate_results.py doc `test_results.json` truoc (do tren test split), roi moi doc `results.csv` |
+| **Chi co 2 model** | RGB (`train.py`) va DS-YOLO (`train_ds.py --fusion crfm`). Cac variant stack6/diff-only/f-sub/rg-yolo da bo. |
+| **imgsz = 640** | Khop checkpoint da train. Khong dung 1024. |
+| **golden chi cho in-house** | `golden_ok.bmp` chi dung cho in-house. SolDef_A khong co golden. |
+| **synth dung golden rieng/mau** | `train_ds.py --golden-dir dataset_synth` (khong phai `--golden`). |
+| **Val/Test khong augment** | Chi train co augmented; val/test 1 anh per source. |
+| **Uu tien test_results.json** | `aggregate_results.py` doc `test_results.json` (tren test split) truoc `results.csv`. |

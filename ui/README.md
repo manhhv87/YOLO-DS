@@ -19,8 +19,7 @@ ui/
 │   ├── opc_client.py          OPC UA client (sends OK/NG to the PLC)
 │   ├── pipeline.py            legacy 8-class YOLOv8m inspection pipeline
 │   ├── pipeline_ds.py         DS-YOLO inspection pipeline (binary OK/NG)
-│   ├── ds_inference.py        DS-YOLO checkpoint loader + NMS wrapper
-│   └── vision_opc_server.py   OPC UA server-side for triggers
+│   └── ds_inference.py        DS-YOLO checkpoint loader + NMS wrapper
 │
 ├── runs/detect/train/weights/   <-- the deployed YOLO weights live here
 │   ├── best.pt                  copy from train/runs/<your-run>/weights/best.pt
