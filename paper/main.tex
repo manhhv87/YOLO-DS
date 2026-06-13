@@ -405,7 +405,13 @@ zero. At initialisation $\mathbf{F}^{\,\ell}_{\!\text{fused}}\!=\!\mathbf{F}^{\,
 so DS-YOLO reduces exactly to a YOLOv8s baseline; as training
 progresses, $\alpha_{\ell}$ and $g_{\ell}$ learn the magnitude and spatial
 distribution of the amplification applied to capture features that deviate from
-the reference.
+the reference. Because the gate branch is scaled by $\alpha_{\ell}$, the
+convolutions $g_{\ell}$ receive gradient only once $\alpha_{\ell}$ departs from
+zero. This is the mechanism of the self-regulation: the scalar $\alpha_{\ell}$
+moves off zero only when a consistent reference-dependent error signal is
+present, so the gate stays at its initialisation (and DS-YOLO at the baseline)
+when the reference is redundant, and trains only when the reference is
+necessary, matching the two regimes we observe in Section~\ref{sec:exp}.
 
 \subsection{DS-YOLO Architecture}
 The full network comprises a single YOLOv8s backbone applied twice
@@ -553,10 +559,9 @@ initialised from the public YOLOv8s pretrained weights; the CRFM convolutions us
 Kaiming weights and
 $\alpha_\ell=0$ (identity at initialisation, with BatchNorm frozen on the golden
 pass so that at $\alpha_\ell=0$ the network is architecturally identical to the
-single-stream YOLOv8s baseline). Augmentation was limited to HSV jitter,
-horizontal flip and random erasing; mosaic and strong geometric augmentations
-were disabled, as they would break the capture--golden alignment that
-reference-guided fusion relies on. The in-house data-fraction results are
+single-stream YOLOv8s baseline). Augmentation was limited to HSV jitter and
+horizontal flip; mosaic and strong geometric augmentations were disabled, as they
+would break the capture--golden alignment that reference-guided fusion relies on. The in-house data-fraction results are
 reported over three seeds as mean$\pm$std; the synthetic benchmark is a single
 run, with each capture loading its own per-sample golden by filename.
 

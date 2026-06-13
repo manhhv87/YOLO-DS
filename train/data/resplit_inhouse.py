@@ -133,6 +133,11 @@ def main() -> None:
     assert not (val_srcs   & test_srcs), "BUG: val ∩ test non-empty"
 
     # -- Step 4: copy files --------------------------------------------------
+    # Clear any stale split dirs first; otherwise re-running with a different
+    # --seed copies on top of old files and re-introduces cross-split leakage.
+    for sp in ("train", "val", "test"):
+        if (args.dst / sp).exists():
+            shutil.rmtree(args.dst / sp)
     stats = {"train": 0, "val": 0, "test": 0}
 
     for src, pairs in src_to_pairs.items():

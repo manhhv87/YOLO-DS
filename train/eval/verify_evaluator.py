@@ -88,8 +88,11 @@ def main() -> None:
     split_rel = data_yaml.get(args.split, f"{args.split}/images")
     split_abs = str(data_root / split_rel) if not Path(split_rel).is_absolute() else split_rel
 
+    # rect=True matches Ultralytics yolo.val()'s default letterboxing; with a
+    # mismatch the cross-check can report a spurious non-zero delta on
+    # non-square data and wrongly blame NMS.
     cfg = get_cfg(DEFAULT_CFG, overrides=dict(
-        imgsz=args.imgsz, batch=4, mode="val", rect=False, cache=False))
+        imgsz=args.imgsz, batch=4, mode="val", rect=True, cache=False))
     ds = build_yolo_dataset(cfg, split_abs, 4, data_yaml, mode="val")
     ldr = DataLoader(ds, batch_size=4, shuffle=False, num_workers=0,
                      collate_fn=ds.collate_fn)

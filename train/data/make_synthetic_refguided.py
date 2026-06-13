@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import shutil
 from pathlib import Path
 
 import cv2
@@ -133,6 +134,11 @@ def main() -> None:
     out = Path(args.out)
     splits = {"train": 1 - args.val_frac - args.test_frac,
               "val": args.val_frac, "test": args.test_frac}
+    # Remove any stale split dirs first, so re-running (e.g. with a different
+    # --n/--seed) cannot leave orphaned samples from a previous run.
+    for s in splits:
+        if (out / s).exists():
+            shutil.rmtree(out / s)
     for s in splits:
         (out / s / "images").mkdir(parents=True, exist_ok=True)
         (out / s / "labels").mkdir(parents=True, exist_ok=True)
