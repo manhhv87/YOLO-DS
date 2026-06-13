@@ -62,7 +62,7 @@ def sift_align_images(ref_img, test_img, n_features=4000, draw_matches=True):
     flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
     matches = flann.knnMatch(des1, des2, k=2)
 
-    good = [m for m,n in matches if m.distance < 0.75*n.distance]
+    good = [mn[0] for mn in matches if len(mn) == 2 and mn[0].distance < 0.75*mn[1].distance]
 
     src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
@@ -91,7 +91,7 @@ def surf_align_images(ref_img, test_img, hessian=400, draw_matches=True):
 
     flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
     matches = flann.knnMatch(des1, des2, k=2)
-    good = [m for m,n in matches if m.distance < 0.75*n.distance]
+    good = [mn[0] for mn in matches if len(mn) == 2 and mn[0].distance < 0.75*mn[1].distance]
 
     src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
@@ -347,15 +347,15 @@ def check_shift_orb(golden_img, test_img, bbox, px_tol=6, deg_tol=5):
     roi_g = golden_img[y1:y2, x1:x2]
     roi_t = test_img[y1:y2, x1:x2]
 
-    g = cv2.GaussianBlur(cv2.cvtColor(roi_g,0),(3,3),0)
-    t = cv2.GaussianBlur(cv2.cvtColor(roi_t,0),(3,3),0)
+    g = cv2.GaussianBlur(cv2.cvtColor(roi_g, cv2.COLOR_BGR2GRAY),(3,3),0)
+    t = cv2.GaussianBlur(cv2.cvtColor(roi_t, cv2.COLOR_BGR2GRAY),(3,3),0)
 
     orb = cv2.ORB_create(800)
     kp1, des1 = orb.detectAndCompute(g,None)
     kp2, des2 = orb.detectAndCompute(t,None)
 
     if des1 is None or des2 is None:
-        return {"status":"NG","reason":"no_features"}
+        return {"status":"NG","reason":"no_features","dx":None,"dy":None,"theta":None}
 
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     good = sorted(bf.match(des1,des2), key=lambda m:m.distance)[:40]
@@ -365,7 +365,7 @@ def check_shift_orb(golden_img, test_img, bbox, px_tol=6, deg_tol=5):
 
     H,_ = cv2.estimateAffinePartial2D(pts1,pts2)
     if H is None:
-        return {"status":"NG","reason":"no_H"}
+        return {"status":"NG","reason":"no_H","dx":None,"dy":None,"theta":None}
 
     dx = float(H[0,2]); dy = float(H[1,2])
     theta = float(np.degrees(np.arctan2(H[1,0],H[0,0])))
@@ -386,28 +386,28 @@ def check_shift_sift(golden_img, test_img, bbox, px_tol=20, deg_tol=20):
     roi_g = golden_img[y1:y2, x1:x2]
     roi_t = test_img[y1:y2, x1:x2]
 
-    g = cv2.GaussianBlur(cv2.cvtColor(roi_g,0),(3,3),0)
-    t = cv2.GaussianBlur(cv2.cvtColor(roi_t,0),(3,3),0)
+    g = cv2.GaussianBlur(cv2.cvtColor(roi_g, cv2.COLOR_BGR2GRAY),(3,3),0)
+    t = cv2.GaussianBlur(cv2.cvtColor(roi_t, cv2.COLOR_BGR2GRAY),(3,3),0)
 
     sift = cv2.SIFT_create(3000)
     kp1,des1 = sift.detectAndCompute(g,None)
     kp2,des2 = sift.detectAndCompute(t,None)
     if des1 is None or des2 is None:
-        return {"status":"NG","reason":"no_features"}
+        return {"status":"NG","reason":"no_features","dx":None,"dy":None,"theta":None}
 
     bf = cv2.BFMatcher(cv2.NORM_L2)
     matches = bf.knnMatch(des1,des2,k=2)
-    good = [m for m,n in matches if m.distance<0.75*n.distance]
+    good = [mn[0] for mn in matches if len(mn) == 2 and mn[0].distance < 0.75*mn[1].distance]
 
     if len(good)<8:
-        return {"status":"NG","reason":"few_matches"}
+        return {"status":"NG","reason":"few_matches","dx":None,"dy":None,"theta":None}
 
     pts1=np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
     pts2=np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
 
     H,_=cv2.estimateAffinePartial2D(pts1,pts2,method=cv2.RANSAC)
     if H is None:
-        return {"status":"NG","reason":"no_H"}
+        return {"status":"NG","reason":"no_H","dx":None,"dy":None,"theta":None}
 
     dx=float(H[0,2]); dy=float(H[1,2])
     theta=float(np.degrees(np.arctan2(H[1,0],H[0,0])))

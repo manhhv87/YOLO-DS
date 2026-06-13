@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 import cv2
+import numpy as np
 
 from core.algorithm import (
     apply_clahe_bgr,
@@ -48,14 +49,14 @@ def main_pipeline_ds(
     weights_path: str = _DEFAULT_WEIGHTS,
     golden_path_for_align: str = _DEFAULT_GOLDEN_ALIGN,
     golden_path_for_model: str = _DEFAULT_GOLDEN,
-    imgsz: int = 1024,
+    imgsz: int = 640,
     conf_th: float = 0.25,
-) -> Dict:
+) -> Tuple[np.ndarray, Dict]:
     """Run a single inspection cycle with DS-YOLO.
 
-    Returns a dict with keys ``verdict`` (``"OK"`` / ``"NG"``),
-    ``ng_components`` (list of bounding boxes flagged as NG),
-    ``annotated_path`` (path to the saved annotated image), and
+    Returns ``(annotated_bgr, info)`` to match the legacy ``main_pipeline``
+    contract the UI worker expects. ``info`` carries ``status``
+    (``"OK"`` / ``"NG"``), ``ng_components``, ``annotated_path`` and
     ``raw_detections`` for diagnostics.
     """
     # 1) Load raw image
@@ -83,12 +84,28 @@ def main_pipeline_ds(
     final_path = os.path.join(final_dir, fname)
     cv2.imwrite(final_path, final_img)
 
-    # 5) DS-YOLO inference. ds_infer() lazily loads weights and golden once
+    # 5) Process the model golden through the SAME geometry (CLAHE -> crop ->
+    #    canvas) as the capture, so the two CRFM streams are spatially aligned
+    #    rather than capture-cropped vs golden-raw.
+    golden_model_raw = cv2.imread(golden_path_for_model)
+    if golden_model_raw is None:
+        raise FileNotFoundError(f"Cannot read model golden image: {golden_path_for_model}")
+    golden_model_proc = paste_crop_to_canvas(
+        crop_pcb_from_blue(apply_clahe_bgr(golden_model_raw, clip=2.0, grid=(8, 8)),
+                           debug=False),
+        debug=False)
+    golden_model_dir = os.path.join(_BASE_DIR, "stored_images", "final_golden")
+    os.makedirs(golden_model_dir, exist_ok=True)
+    golden_model_path = os.path.join(golden_model_dir,
+                                     os.path.basename(golden_path_for_model))
+    cv2.imwrite(golden_model_path, golden_model_proc)
+
+    # 6) DS-YOLO inference. ds_infer() lazily loads weights and golden once
     #    and caches them across calls; subsequent inferences are fast.
     detections, annotated = ds_infer(
         weights_path=weights_path,
         img_path=final_path,
-        golden_path=golden_path_for_model,
+        golden_path=golden_model_path,
         imgsz=imgsz,
         conf_th=conf_th,
     )
@@ -111,13 +128,15 @@ def main_pipeline_ds(
     annotated_path = os.path.join(result_dir, fname)
     cv2.imwrite(annotated_path, annotated)
 
-    return dict(
+    info = dict(
+        status=verdict,
         verdict=verdict,
         ng_components=ng_components,
         annotated_path=annotated_path,
         raw_detections=detections,
         timestamp=datetime.now().isoformat(timespec="seconds"),
     )
+    return annotated, info
 
 
 if __name__ == "__main__":
@@ -125,5 +144,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python -m core.pipeline_ds <image_path>")
         sys.exit(1)
-    res = main_pipeline_ds(sys.argv[1])
+    _annotated, res = main_pipeline_ds(sys.argv[1])
     print(json.dumps(res, indent=2, ensure_ascii=False))

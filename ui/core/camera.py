@@ -54,21 +54,29 @@ class BaslerCamera:
             print("[Basler] Error: Camera not connected.")
             return None
 
+        grab = None
         try:
             self.cam.StartGrabbingMax(1)
             grab = self.cam.RetrieveResult(timeout, pylon.TimeoutHandling_ThrowException)
-
             if grab.GrabSucceeded():
-                img = self.converter.Convert(grab).GetArray()
-                grab.Release()
-                return img
-
-            grab.Release()
+                return self.converter.Convert(grab).GetArray()
             return None
 
         except Exception as e:
             print("[Basler] Grab Error:", e)
             return None
+
+        finally:
+            # Always release the grab result and stop grabbing so a single
+            # timeout/exception cannot leave the camera wedged in a grabbing
+            # state and break every subsequent capture.
+            if grab is not None:
+                grab.Release()
+            try:
+                if self.cam is not None and self.cam.IsGrabbing():
+                    self.cam.StopGrabbing()
+            except Exception:
+                pass
 
     # -----------------------------
     # CAPTURE + SAVE TO FOLDER

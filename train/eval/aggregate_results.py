@@ -1,16 +1,16 @@
 """Aggregate training/validation results into LaTeX tables.
 
 Handles two CSV formats:
-  * Ultralytics format  (train.py variants: rgb, diff-only, stack6, f-sub)
-  * train_ds.py format  (ds-yolo, f-sub variants)
+  * Ultralytics format  (train.py: rgb baseline)
+  * train_ds.py format  (ds-yolo)
 
 Usage::
 
-    # Table II — all variants (no GPU needed)
+    # Results table (no GPU needed)
     python aggregate_results.py main \\
         --runs    runs/detect \\
         --ds-runs runs/ds_yolo \\
-        --variants rgb diff-only stack6 f-sub ds-yolo
+        --variants rgb ds-yolo
 
     # Table III — per-class mAP (needs GPU)
     python aggregate_results.py perclass \\
@@ -462,13 +462,13 @@ def main() -> None:
     pm = sub.add_parser("main", parents=[common],
                         help="Aggregate Table II from results.csv files.")
     pm.add_argument("--variants", nargs="+",
-                    default=["rgb", "stack6", "f-sub", "ds-yolo"])
+                    default=["rgb", "ds-yolo"])
     pm.set_defaults(func=cmd_main)
 
     pms = sub.add_parser("mainstats", parents=[common],
                          help="Table II as mean+/-std over multiple seeds.")
     pms.add_argument("--variants", nargs="+",
-                     default=["rgb", "stack6", "f-sub", "ds-yolo"])
+                     default=["rgb", "ds-yolo"])
     pms.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     pms.set_defaults(func=cmd_mainstats)
 

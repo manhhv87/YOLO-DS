@@ -6,10 +6,6 @@ Baseline (RGB)::
 
     python train.py --variant rgb       --data dataset_fixed/data.yaml   --epochs 60
 
-Stack6 (RGB + Golden, 6-ch)::
-
-    python train.py --variant stack6    --data dataset_fixed/data.yaml   --epochs 60
-
 RGB on SolDef_A (external validation)::
 
     python train.py --variant rgb       --data soldef/yolo/data.yaml     --epochs 60 --name rgb_soldef
@@ -25,13 +21,12 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
-from models.model_4ch import patch_first_conv
-
 VARIANT_CHANNELS = {
     "rgb": 3,
-    "diff-only": 3,
-    "stack6": 6,
-    # f-sub / ds-yolo are trained via train_ds.py (dual-stream, not Ultralytics pipeline)
+    # 'diff-only' / 'stack6' removed: neither produced a real model through the
+    # Ultralytics pipeline (diff-only had no diff input; the 6-ch stack6 patch is
+    # discarded when yolo.train() rebuilds the 3-ch model), so both were just
+    # duplicate RGB runs. f-sub / ds-yolo are trained via train_ds.py.
 }
 
 
@@ -84,29 +79,9 @@ def main() -> None:
         if args.scale     == 0.0: args.scale     = 0.5
 
     weights = args.weights or f"yolov8{args.size}.pt"
-    in_channels = VARIANT_CHANNELS[args.variant]
     yolo = YOLO(weights)
-    if in_channels != 3:
-        patch_first_conv(yolo.model, in_channels=in_channels)
-
-    # 4-channel and 6-channel variants store information beyond pixel intensity
-    # in the extra channels (diff map, golden RGB).  Photometric augmentation
-    # (HSV jitter) and the default fill value 114 used by mosaic / letterbox
-    # would silently corrupt those extra channels — for the diff channel,
-    # fill=114 looks like a strong fake defect everywhere.  Disable HSV for
-    # multi-channel variants and force mosaic=0 so the diff signal stays
-    # clean.
-    multi_channel = in_channels != 3
-    if multi_channel and args.mosaic > 0:
-        print(f"[warn] --mosaic={args.mosaic} requested but variant has "
-              f"{in_channels} channels: forcing mosaic=0.0 to preserve the "
-              f"extra channel(s).")
-        mosaic_p = 0.0
-    else:
-        mosaic_p = args.mosaic
-    hsv_h = 0.0 if multi_channel else 0.015
-    hsv_s = 0.0 if multi_channel else 0.7
-    hsv_v = 0.0 if multi_channel else 0.4
+    mosaic_p = args.mosaic
+    hsv_h, hsv_s, hsv_v = 0.015, 0.7, 0.4
 
     yolo.train(
         data=args.data,

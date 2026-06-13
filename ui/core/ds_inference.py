@@ -13,7 +13,10 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
-from ultralytics.utils.ops import non_max_suppression
+try:  # ultralytics >= 8.4 moved this out of utils.ops
+    from ultralytics.utils.nms import non_max_suppression
+except ImportError:  # older ultralytics
+    from ultralytics.utils.ops import non_max_suppression
 
 # Make the train/models package importable from the UI process. The
 # DSYOLOv8m class is shared between training and inference.
@@ -37,7 +40,7 @@ def _device() -> str:
 def load_ds_yolo(
     weights_path: str,
     golden_path: str,
-    imgsz: int = 1024,
+    imgsz: int = 640,
     device: Optional[str] = None,
 ) -> Tuple[DSYOLOv8m, torch.Tensor, dict]:
     """Load a DS-YOLO checkpoint and the golden image once, cache afterwards.
@@ -79,7 +82,7 @@ def ds_infer(
     img_path: str,
     golden_path: str,
     *,
-    imgsz: int = 1024,
+    imgsz: int = 640,
     conf_th: float = 0.25,
     iou_th: float = 0.7,
     max_det: int = 300,

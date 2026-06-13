@@ -23,9 +23,9 @@ Usage
 Available steps (run in this order)
 -------------------------------------
     resplit       Re-split in-house dataset by source image level
-    train_all     Train 3 Ultralytics variants (rgb, diff-only, stack6)
+    train_all     Train the RGB baseline (Ultralytics pipeline)
     train_ds      Train DS-YOLO with train_ds.py
-    fraction      Data-fraction study (H3): train rgb + ds-yolo at 25/50/100 %
+    fraction      Data-fraction study (H3): train rgb + ds-yolo at 10/25/50 %
     robustness    Robustness study: eval rgb vs ds-yolo under alignment perturbation
     soldef_val    Train RGB baseline on SolDef_A for external validation
     tables        Aggregate all results into LaTeX table rows
@@ -164,15 +164,15 @@ def _train_variant(variant: str, data: Path, name: str | None = None,
 def step_train_all(dry: bool, force: bool) -> None:
     data_rgb = DATASET_FIXED / "data.yaml"
 
-    # NOTE: 'diff-only' is intentionally NOT trained here. train.py applies no
-    # diff preprocessing (VARIANT_CHANNELS['diff-only']=3, plain RGB), and the
-    # diff-dataset builder (data/build_4ch_dataset.py) is missing, so a
-    # 'diff-only' run is just a duplicate RGB model — exactly the bug where its
-    # test_results.json was byte-identical to rgb. Re-enable ONLY after a genuine
-    # aligned |capture-golden| diff dataset is built and fed in.
+    # Only the RGB baseline is trained through the Ultralytics pipeline. The
+    # other single-stream variants were removed because neither was a real
+    # model: 'diff-only' had no diff preprocessing (plain RGB, byte-identical
+    # test_results.json to rgb), and 'stack6' (6-ch) could not take effect
+    # because yolo.train() rebuilds the model from its 3-ch YAML and discards
+    # the first-conv patch, so it was also just a duplicate RGB run. The paper
+    # compares RGB against DS-YOLO only.
     variants_data = [
         ("rgb",       data_rgb),
-        ("stack6",    data_rgb),
     ]
     for variant, data in variants_data:
         for seed in SEEDS:
@@ -233,16 +233,9 @@ def step_train_ds(dry: bool, force: bool) -> None:
         else:
             print(f"[skip] train {ds_name} — output exists")
 
-        # F-Sub (feature subtraction ablation)
-        fsub_name = "f_sub" if seed == 0 else f"f_sub_s{seed}"
-        if force or not exists(RUNS_DS / fsub_name / "weights" / "best.pt"):
-            _train_ds(fsub_name, fusion="sub", dry=dry, seed=seed)
-        else:
-            print(f"[skip] train {fsub_name} — output exists")
-
 
 def step_fraction(dry: bool, force: bool) -> None:
-    """Data-fraction study (H3): train rgb + ds-yolo at 25 / 50 / 100 %."""
+    """Data-fraction study (H3): train rgb + ds-yolo at 10 / 25 / 50 %."""
     data_rgb = DATASET_FIXED / "data.yaml"
 
     # 100% is already covered by step_train_all (rgb) and step_train_ds (ds_yolo).
@@ -476,11 +469,11 @@ def step_tables(dry: bool, force: bool = False) -> None:  # `force` accepted for
     print("\n" + "=" * 60)
     print("TABLE II — Main results")
     print("=" * 60)
-    # Order must match Table II in paper.  SolDef-pretrain rows are appended
-    # only if their checkpoints exist (step_soldef_finetune has run).
-    # 'diff-only' dropped: it was a duplicate RGB run (no real diff input). Add
-    # it back here once a genuine diff dataset + run exists.
-    table2_variants = ["rgb", "stack6", "f-sub", "ds-yolo"]
+    # Order must match the results table in the paper. SolDef-pretrain rows are
+    # appended only if their checkpoints exist (step_soldef_finetune has run).
+    # The paper compares RGB vs DS-YOLO; the stack6/f-sub/diff-only variants were
+    # removed (see step_train_all / step_train_ds) so they are not tabulated.
+    table2_variants = ["rgb", "ds-yolo"]
     if (RUNS_DETECT / "rgb_soldef_pre" / "weights" / "best.pt").is_file():
         table2_variants.append("rgb-soldef-pre")
     if (RUNS_DS / "ds_yolo_soldef_pre" / "weights" / "best.pt").is_file():

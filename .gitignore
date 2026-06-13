@@ -11,6 +11,9 @@ dataset_hard/
 __pycache__/
 *.pyc
 
+# Auto-downloaded model weights
+*.pt
+
 # LaTeX build artifacts
 paper/*.aux
 paper/*.log

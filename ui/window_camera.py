@@ -233,6 +233,7 @@ class AOIWindow(QtWidgets.QMainWindow):
 
         self.opc = None
         self.worker = None
+        self.camera = None
 
         self.count_ok = 0
         self.count_ng = 0
@@ -280,10 +281,10 @@ class AOIWindow(QtWidgets.QMainWindow):
         self.lbl_count_total = QtWidgets.QLabel("Total: 0")
 
         self.lbl_count_ok.setStyleSheet(
-            "font-size:18px; font-weight:bold; color:red; background:#333; padding:8px;"
+            "font-size:18px; font-weight:bold; color:lime; background:#333; padding:8px;"
         )
         self.lbl_count_ng.setStyleSheet(
-            "font-size:18px; font-weight:bold; color:lime; background:#333; padding:8px;"
+            "font-size:18px; font-weight:bold; color:red; background:#333; padding:8px;"
         )
         self.lbl_count_total.setStyleSheet(
             "font-size:18px; font-weight:bold; color:#00aaff; background:#333; padding:8px;"
@@ -334,7 +335,22 @@ class AOIWindow(QtWidgets.QMainWindow):
     def disconnect_opc(self):
         if self.worker:
             self.worker.running = False
-            self.worker.quit()
+            # run() is a plain while-loop (quit() is a no-op without a Qt event
+            # loop), and a cycle can take several seconds. Wait until the thread
+            # actually returns before freeing the camera/OPC it still uses,
+            # bounded so a stuck cycle cannot hang the UI forever.
+            waited = 0
+            while self.worker.isRunning() and waited < 60000:
+                self.worker.wait(2000)
+                waited += 2000
+            if self.worker.isRunning():
+                self.worker.terminate()
+                self.worker.wait()
+            self.worker = None
+
+        if self.camera:
+            self.camera.disconnect()
+            self.camera = None
 
         if self.opc:
             self.opc.disconnect()
@@ -351,12 +367,19 @@ class AOIWindow(QtWidgets.QMainWindow):
             self.status_bar.setText("Chưa kết nối OPC UA!")
             return
 
+        # Guard against a second Start: re-running would connect another camera
+        # handle and spawn a duplicate worker thread.
+        if self.worker is not None and self.worker.isRunning():
+            self.status_bar.setText("AOI server đang chạy.")
+            return
+
         BASE_DIR = os.path.dirname(os.path.dirname(__file__))
         save_dir = os.path.join(BASE_DIR, "stored_images/raw_images")
 
         # camera khởi tạo ở đây (không phải trong VisionWorker)
-        self.camera = BaslerCamera(save_folder=save_dir)
-        self.camera.connect()
+        if self.camera is None:
+            self.camera = BaslerCamera(save_folder=save_dir)
+            self.camera.connect()
 
         self.worker = VisionWorker(self.opc, self.camera)
 

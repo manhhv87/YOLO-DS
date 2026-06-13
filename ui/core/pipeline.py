@@ -121,6 +121,8 @@ def main_pipeline(image_path):
         matched_boxes = []
         has_ok = False
         ng_cls_item = None
+        ok_family = None
+        ok_bbox = None
 
         for (x1, y1, x2, y2, conf, cls_id, cls_name) in det_boxes:
             if not (x1 <= cx <= x2 and y1 <= cy <= y2):
@@ -130,6 +132,8 @@ def main_pipeline(image_path):
 
             if cls_name.endswith("_OK"):
                 has_ok = True
+                ok_family = cls_id // 2     # classes are (NG, OK) pairs per family
+                ok_bbox = [x1, y1, x2, y2]
 
             elif cls_name.endswith("_NG"):
                 ng_cls_item = {
@@ -143,9 +147,23 @@ def main_pipeline(image_path):
             missing_list.append(g)
             continue
 
-        # NG class
-        if ng_cls_item and not has_ok:
+        # NG class — any NG detection fails the component, even if an OK box of
+        # the same component also overlaps (NG is dominant, so a defect cannot be
+        # masked by a co-located OK detection).
+        if ng_cls_item:
             ng_components.append(ng_cls_item)
+            continue
+
+        # Wrong component — an OK box whose component family differs from the one
+        # the golden expects (g["cls"]//2) means the wrong part was placed.
+        expected_family = g.get("cls")
+        if expected_family is not None and ok_family is not None \
+                and ok_family != expected_family // 2:
+            ng_components.append({
+                "cx": cx, "cy": cy,
+                "bbox": ok_bbox,
+                "class": "WRONG_COMPONENT",
+            })
             continue
 
         # Shift check
@@ -269,6 +287,11 @@ def main_pipeline_no_shift(image_path):
     if golden_img is None:
         raise Exception("Không đọc được golden2.bmp!")
 
+    # CLAHE before align — match main_pipeline so the live (no-shift) path feeds
+    # the detector the same pixel distribution it was tuned on.
+    raw_img = apply_clahe_bgr(raw_img, clip=2.0, grid=(8, 8))
+    golden_img = apply_clahe_bgr(golden_img, clip=2.0, grid=(8, 8))
+
     aligned_img, H = orb_align_images(golden_img, raw_img,2000, draw_matches=False)
 
     # ==========================
@@ -333,6 +356,8 @@ def main_pipeline_no_shift(image_path):
         matched = []
         is_ok = False
         ng_item = None
+        ok_family = None
+        ok_bbox = None
 
         for (x1, y1, x2, y2, conf, cls_id, cls_name) in det_boxes:
             if not (x1 <= cx <= x2 and y1 <= cy <= y2):
@@ -342,6 +367,8 @@ def main_pipeline_no_shift(image_path):
 
             if cls_name.endswith("_OK"):
                 is_ok = True
+                ok_family = cls_id // 2     # classes are (NG, OK) pairs per family
+                ok_bbox = [x1, y1, x2, y2]
             elif cls_name.endswith("_NG"):
                 ng_item = {
                     "cx": cx, "cy": cy,
@@ -354,9 +381,22 @@ def main_pipeline_no_shift(image_path):
             missing_list.append(g)
             continue
 
-        # NG class
-        if ng_item and not is_ok:
+        # NG class — dominant over a co-located OK box (a defect cannot be masked
+        # by an overlapping OK detection).
+        if ng_item:
             ng_components.append(ng_item)
+            continue
+
+        # Wrong component — an OK box whose family differs from the one the golden
+        # expects (g["cls"]//2) means the wrong part was placed there.
+        expected_family = g.get("cls")
+        if expected_family is not None and ok_family is not None \
+                and ok_family != expected_family // 2:
+            ng_components.append({
+                "cx": cx, "cy": cy,
+                "bbox": ok_bbox,
+                "class": "WRONG_COMPONENT",
+            })
             continue
 
     # ==========================
