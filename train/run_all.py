@@ -430,11 +430,20 @@ def step_harden(dry: bool, force: bool) -> None:
                 f"train: train/images\nval: val/images\ntest: test/images\n"
                 f"names:\n  0: OK\n  1: NG\nnc: 2\n", encoding="utf-8")
             print(f"[harden] wrote {hard / 'data.yaml'}")
-    # Train RGB + DS-YOLO on the harder set (single fixed golden).
-    if force or not exists(RUNS_DETECT / "rgb_hard" / "weights" / "best.pt"):
-        _train_variant("rgb", hard / "data.yaml", name="rgb_hard", dry=dry)
-    if force or not exists(RUNS_DS / "ds_yolo_hard" / "weights" / "best.pt"):
-        _train_ds("ds_yolo_hard", fusion="crfm", dry=dry, data=hard / "data.yaml")
+    # Train RGB + DS-YOLO on the harder set (single fixed golden), over all
+    # SEEDS so the row can be reported as mean+/-std like the data-fraction rows.
+    for seed in SEEDS:
+        rgb_name = "rgb_hard" if seed == 0 else f"rgb_hard_s{seed}"
+        if force or not exists(RUNS_DETECT / rgb_name / "weights" / "best.pt"):
+            _train_variant("rgb", hard / "data.yaml", name=rgb_name, seed=seed, dry=dry)
+        else:
+            print(f"[skip] train {rgb_name} — output exists")
+
+        ds_name = "ds_yolo_hard" if seed == 0 else f"ds_yolo_hard_s{seed}"
+        if force or not exists(RUNS_DS / ds_name / "weights" / "best.pt"):
+            _train_ds(ds_name, fusion="crfm", dry=dry, data=hard / "data.yaml", seed=seed)
+        else:
+            print(f"[skip] train {ds_name} — output exists")
 
 
 def step_synth(dry: bool, force: bool) -> None:
