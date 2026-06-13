@@ -1,2 +1,21 @@
 runs/
 clean.bat
+
+# Generated datasets (rebuilt by train/data/*.py — do not commit)
+dataset_fixed/
+dataset_synth/
+dataset_rg/
+dataset_hard/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.blg
+paper/*.bbl
+paper/*.fls
+paper/*.fdb_latexmk

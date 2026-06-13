@@ -45,6 +45,15 @@ import yaml
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
+def _source_of(stem: str) -> str:
+    """Original capture name, stripping any Roboflow augmentation suffix.
+
+    ``g1_png.rf.2be1...`` -> ``g1``, so augmented copies of one physical board
+    stay together when splitting (no board leaks across train/val/test).
+    """
+    return stem.split("_png.rf.")[0] if "_png.rf." in stem else stem
+
+
 def _read_boxes(lbl: Path):
     out = []
     if lbl.is_file():
@@ -116,9 +125,9 @@ def main() -> None:
 
     img_dir = Path(args.images)
     lbl_dir = Path(args.labels) if args.labels else img_dir.parent / "labels"
-    srcs = sorted(q for q in img_dir.iterdir() if q.suffix.lower() in _IMG_EXTS)
-    srcs = [q for q in srcs if _read_boxes(lbl_dir / (q.stem + ".txt"))]
-    if not srcs:
+    imgs = sorted(q for q in img_dir.iterdir() if q.suffix.lower() in _IMG_EXTS)
+    imgs = [q for q in imgs if _read_boxes(lbl_dir / (q.stem + ".txt"))]
+    if not imgs:
         raise FileNotFoundError(f"No labelled images under {img_dir}")
 
     out = Path(args.out)
@@ -129,30 +138,36 @@ def main() -> None:
         (out / s / "labels").mkdir(parents=True, exist_ok=True)
         (out / s / "golden").mkdir(parents=True, exist_ok=True)
 
-    # SOURCE-LEVEL split: assign each raw capture to exactly ONE split, so the
-    # same source board never appears in more than one of train/val/test.
-    order_src = list(range(len(srcs)))
+    # BOARD-LEVEL split: group augmented copies by their ORIGINAL source capture,
+    # then assign each source to exactly ONE split, so no physical board (and none
+    # of its augmentations) appears in more than one of train/val/test.
+    by_source: dict[str, list[Path]] = {}
+    for q in imgs:
+        by_source.setdefault(_source_of(q.stem), []).append(q)
+    sources = sorted(by_source)
+    order_src = list(range(len(sources)))
     rng.shuffle(order_src)
-    n_test = max(1, int(round(args.test_frac * len(srcs))))
-    n_val = max(1, int(round(args.val_frac * len(srcs))))
-    src_by_split = {"train": [], "val": [], "test": []}
+    n_test = max(1, int(round(args.test_frac * len(sources))))
+    n_val = max(1, int(round(args.val_frac * len(sources))))
+    img_by_split = {"train": [], "val": [], "test": []}
     for rank, k in enumerate(order_src):
         s = "test" if rank < n_test else ("val" if rank < n_test + n_val else "train")
-        src_by_split[s].append(srcs[k])
-    if not src_by_split["train"]:
-        raise ValueError("Too few labelled source captures for a source-level "
+        img_by_split[s].extend(by_source[sources[k]])
+    if not img_by_split["train"]:
+        raise ValueError("Too few labelled source captures for a board-level "
                          "split; lower --val-frac/--test-frac or add images.")
-    # Assign each sample to a split (proportional); its source is drawn only from
-    # that split's disjoint pool.
+    # Assign each sample to a split (proportional); its base image is drawn only
+    # from that split's disjoint pool of source augmentations.
     sample_split = []
     for s in ("train", "val", "test"):
         sample_split += [s] * max(1, int(round(splits[s] * args.n)))
     rng.shuffle(sample_split)
 
     n_ng = n_ok = 0
+    manifest = []
     for i in range(len(sample_split)):
         split = sample_split[i]
-        pool = src_by_split[split]
+        pool = img_by_split[split]
         src = pool[int(rng.integers(len(pool)))]
         img0 = cv2.imread(str(src), cv2.IMREAD_COLOR)
         if img0 is None:
@@ -199,6 +214,7 @@ def main() -> None:
         cv2.imwrite(str(out / split / "golden" / f"{stem}.jpg"), golden)
         (out / split / "labels" / f"{stem}.txt").write_text("\n".join(lines) + "\n",
                                                              encoding="utf-8")
+        manifest.append((stem, split, _source_of(src.stem)))
 
     data = {
         "path": str(out.resolve()).replace("\\", "/"),
@@ -208,6 +224,13 @@ def main() -> None:
     }
     with (out / "data.yaml").open("w") as f:
         yaml.safe_dump(data, f, sort_keys=False)
+
+    # Audit trail: which original board capture each sample came from, and its
+    # split (lets you verify board-level disjointness across train/val/test).
+    (out / "split_manifest.csv").write_text(
+        "stem,split,source\n"
+        + "\n".join(f"{s},{sp},{src}" for s, sp, src in manifest) + "\n",
+        encoding="utf-8")
 
     print(f"[make_synthetic_refguided] {args.n} samples -> {out}")
     print(f"[make_synthetic_refguided] OK boxes={n_ok}  NG boxes={n_ng}  "
