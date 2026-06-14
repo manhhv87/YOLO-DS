@@ -562,9 +562,10 @@ $\alpha_\ell=0$ (identity at initialisation, with BatchNorm frozen on the golden
 pass so that at $\alpha_\ell=0$ the network is architecturally identical to the
 single-stream YOLOv8s baseline). Augmentation was limited to HSV jitter and
 horizontal flip; mosaic and strong geometric augmentations were disabled, as they
-would break the capture--golden alignment that reference-guided fusion relies on. The in-house data-fraction results are
-reported over three seeds as mean$\pm$std; the synthetic benchmark is a single
-run, with each capture loading its own per-sample golden by filename.
+would break the capture--golden alignment that reference-guided fusion relies on. All results are reported over three
+seeds as mean$\pm$std; for the synthetic benchmark each seed regenerates an
+independent board-disjoint dataset, and each capture loads its own per-sample
+golden by filename.
 
 \subsection{Main Results}
 \label{sec:main_results}
@@ -594,11 +595,11 @@ therefore not a performance comparison but a test of whether the gate becomes
 active and the CRFM exploits a reference it provably requires
 (Table~\ref{tab:synth}). The RGB baseline plateaus at mAP@0.5$=0.85$, recall
 $=0.73$ (its by-design ceiling; the residual recall comes from the
-appearance-visible shift defects). DS-YOLO's gate becomes active ($\alpha_\ell$
-grows to $-0.19$, $-0.67$ and $-0.01$ at $P_3,P_4,P_5$, against
-$|\alpha_\ell|\!<\!10^{-3}$ on the in-house board) and the model improves
-detection to mAP@0.5$=0.99$, recall $=0.97$, with the gain concentrated on the
-missing components that carry no local cue. Since at $\alpha_\ell\!=\!0$ DS-YOLO's forward
+appearance-visible shift defects). DS-YOLO's gate becomes active: in every seed
+it opens strongly at $P_3$ or $P_4$ (peak $|\alpha_\ell|=0.71\pm0.03$ over three
+seeds), against $|\alpha_\ell|\!<\!10^{-3}$ on the in-house board. The model
+improves detection to mAP@0.5$=0.98$, recall $=0.97$, with the gain concentrated
+on the missing components that carry no local cue. Since at $\alpha_\ell\!=\!0$ DS-YOLO's forward
 pass is architecturally identical to single-stream YOLOv8s (BatchNorm frozen on
 the golden pass), the architecture cannot exceed the capture-only baseline other
 than through the CRFM, so the gate activation indicates that the module uses the
@@ -628,27 +629,25 @@ harder injected defects  & $0.972{\pm}.002$ & $0.972{\pm}.003$ & $0.814{\pm}.004
 \caption{Regime~2 (synthetic reference-dependent benchmark): the task is
 by construction unsolvable for a capture-only model, so the RGB row is its
 design ceiling, not a tuned competitor. The experiment asks only whether
-DS-YOLO's gate becomes active and improves detection. Single run on
-${\sim}1{,}500$ samples.}
+DS-YOLO's gate becomes active and improves detection. Mean$\pm$std over three
+seeds, each an independent board-disjoint benchmark of ${\sim}1{,}500$ samples.}
 \label{tab:synth}
 \centering\footnotesize
 \resizebox{\columnwidth}{!}{\begin{tabular}{@{}l c c c c@{}}
 \toprule
 \textbf{Method} & \textbf{Prec.} & \textbf{Recall} & \textbf{mAP@0.5} & \textbf{mAP@0.5:0.95}\\
 \midrule
-YOLOv8s (RGB, capture only)   & $0.925$ & $0.733$ & $0.855$ & $0.721$\\
-\textbf{DS-YOLO (ours)}       & $\mathbf{0.990}$ & $\mathbf{0.971}$ & $\mathbf{0.992}$ & $\mathbf{0.863}$\\
+YOLOv8s (RGB, capture only)   & $0.949{\pm}.017$ & $0.725{\pm}.011$ & $0.853{\pm}.013$ & $0.713{\pm}.019$\\
+\textbf{DS-YOLO (ours)}       & $\mathbf{0.984{\pm}.010}$ & $\mathbf{0.968{\pm}.003}$ & $\mathbf{0.982{\pm}.008}$ & $\mathbf{0.850{\pm}.013}$\\
 \bottomrule
 \end{tabular}}
 \end{table}
 
-\noindent\emph{Caveats.} This reference-dependent result is synthetic and from a
-single run: the defects are inpainted, the RGB ceiling is fixed by the task
-design, and we do not estimate variance. Its purpose is to verify that the gate
-can exploit a known-necessary reference rather than to estimate field accuracy.
-Validating the effect on physically-induced reference-dependent defects, over
-multiple seeds and with an inpainting-artefact control, is the most important next
-step.
+\noindent\emph{Caveats.} This reference-dependent result is synthetic: the defects
+are inpainted and the RGB ceiling is fixed by the task design, so the numbers
+probe the fusion mechanism rather than estimate field accuracy. Validating the
+effect on physically-induced reference-dependent defects, with an
+inpainting-artefact control, is the most important next step.
 
 \subsection{Data Efficiency (H3)}
 We trained both models on $10\%$, $25\%$ and $50\%$ of the in-house set, using an
@@ -696,7 +695,7 @@ a single fixed board the reference is redundant and DS-YOLO performs on par
 with the RGB baseline (the fusion gate stays $\approx\!0$); on
 reference-dependent defects (a component present but missing or misplaced relative
 to the golden) it is necessary, and DS-YOLO improves recall by $+24$ points
-(mAP@0.5 $0.85\!\rightarrow\!0.99$) over an appearance-only detector, with the gate
+(mAP@0.5 $0.85\!\rightarrow\!0.98$) over an appearance-only detector, with the gate
 active. The system is deployed on a
 real SMT cell integrating a Mitsubishi PLC, two articulated robots and a GigE
 camera over CC-Link and OPC~UA, adding only one extra backbone pass per board.
