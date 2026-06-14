@@ -1,11 +1,10 @@
 runs/
 clean.bat
 
-# Generated datasets (rebuilt by train/data/*.py — do not commit)
-dataset_fixed/
-dataset_synth/
-dataset_rg/
-dataset_hard/
+# Generated datasets (rebuilt by train/data/*.py — do not commit).
+# Glob covers per-seed variants (dataset_synth_s1/, ...); does NOT match the
+# committed datasets/ dir (no underscore after "dataset").
+dataset_*/
 
 # Python caches
 __pycache__/

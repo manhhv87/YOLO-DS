@@ -452,23 +452,36 @@ def step_synth(dry: bool, force: bool) -> None:
     a legitimately-absent one). This is the decisive test of whether CRFM can
     learn: watch the [CRFM alpha] log and whether DS-YOLO (--golden-dir) beats
     the RGB baseline (which never sees the reference).
+
+    Runs over all SEEDS: each seed regenerates an INDEPENDENT board-disjoint
+    benchmark (different generation seed) AND trains with that seed, so Table II
+    can be reported as mean+/-std over both the synthetic generation and the
+    training randomness.
     """
-    synth = HERE / "dataset_synth"
-    if force or not exists(synth / "data.yaml"):
-        run([sys.executable, "data/make_synthetic_refguided.py",
-             "--images", str(DATASET_FIXED / "train" / "images"),
-             "--labels", str(DATASET_FIXED / "train" / "labels"),
-             "--out", str(synth), "--n", "1500",
-             "--keep", "0.7", "--defect-rate", "0.25", "--seed", "0"], dry=dry)
-    # RGB baseline (capture only — expected to struggle on missing-NG).
-    if force or not exists(RUNS_DETECT / "rgb_synth" / "weights" / "best.pt"):
-        _train_variant("rgb", synth / "data.yaml", name="rgb_synth", dry=dry)
-    # DS-YOLO with PER-SAMPLE golden (the reference it needs).
-    if force or not exists(RUNS_DS / "ds_yolo_synth" / "weights" / "best.pt"):
-        _train_ds("ds_yolo_synth", fusion="crfm", dry=dry,
-                  data=synth / "data.yaml",
-                  extra=["--golden-dir", str(synth)])
-    print("\n[synth] Compare runs/detect/rgb_synth vs runs/ds_yolo/ds_yolo_synth.")
+    for seed in SEEDS:
+        synth = HERE / ("dataset_synth" if seed == 0 else f"dataset_synth_s{seed}")
+        if force or not exists(synth / "data.yaml"):
+            run([sys.executable, "data/make_synthetic_refguided.py",
+                 "--images", str(DATASET_FIXED / "train" / "images"),
+                 "--labels", str(DATASET_FIXED / "train" / "labels"),
+                 "--out", str(synth), "--n", "1500",
+                 "--keep", "0.7", "--defect-rate", "0.25",
+                 "--seed", str(seed)], dry=dry)
+        # RGB baseline (capture only — expected to struggle on missing-NG).
+        rgb_name = "rgb_synth" if seed == 0 else f"rgb_synth_s{seed}"
+        if force or not exists(RUNS_DETECT / rgb_name / "weights" / "best.pt"):
+            _train_variant("rgb", synth / "data.yaml", name=rgb_name, seed=seed, dry=dry)
+        else:
+            print(f"[skip] train {rgb_name} — output exists")
+        # DS-YOLO with PER-SAMPLE golden (the reference it needs).
+        ds_name = "ds_yolo_synth" if seed == 0 else f"ds_yolo_synth_s{seed}"
+        if force or not exists(RUNS_DS / ds_name / "weights" / "best.pt"):
+            _train_ds(ds_name, fusion="crfm", dry=dry, seed=seed,
+                      data=synth / "data.yaml",
+                      extra=["--golden-dir", str(synth)])
+        else:
+            print(f"[skip] train {ds_name} — output exists")
+    print("\n[synth] Compare runs/detect/rgb_synth* vs runs/ds_yolo/ds_yolo_synth*.")
     print("[synth] If DS-YOLO >> RGB and [CRFM alpha] grew, CRFM works when the "
           "golden is required.")
 
