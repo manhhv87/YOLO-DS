@@ -110,7 +110,7 @@ trained on the target components. The YOLO family of detectors
 \cite{redmon2016yolo,jocher2023yolov8} is well suited to this setting owing to
 its favourable accuracy/throughput trade-off, and several recent works have
 applied it to PCB defect detection
-\cite{xu2025yolo11solder,du2023yolombbi,tang2019deeppcb}.
+\cite{xu2025yolo11solder,du2023yolombbi}.
 A common limitation of these works is that the detector is treated as a generic
 object detector: it consumes only the captured frame and must internalise, in
 its weights, the expected appearance of every component at every position. This
@@ -210,10 +210,10 @@ On the controller side, CC-Link
 \cite{mitsubishi_qj61bt11n_manual} provides deterministic field-level
 traffic between a PLC and remote stations, while OPC~UA (IEC~62541)
 \cite{iec62541} offers a vendor-neutral, secure protocol for the
-PLC-to-supervisory layer. Their combined use is recommended by the
-RAMI~4.0 reference model and has been reported in several Industry~4.0
-case studies~\cite{maslanka2025visionplc,velesaca2025opcuaml}, but
-their use as the data plane for a deep-learning vision server has received
+PLC-to-supervisory layer. Vision-to-PLC integration for inline quality inspection
+has been demonstrated in recent Industry~4.0 case
+studies~\cite{maslanka2025visionplc,velesaca2025opcuaml}, but the use of these
+standards as the data plane for a deep-learning vision server has received
 comparatively little attention.
 
 %==============================================================================
