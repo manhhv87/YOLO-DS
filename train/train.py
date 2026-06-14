@@ -29,6 +29,14 @@ VARIANT_CHANNELS = {
     # duplicate RGB runs. f-sub / ds-yolo are trained via train_ds.py.
 }
 
+# Pin all Ultralytics outputs under train/runs/detect/ regardless of the global
+# Ultralytics settings (settings.yaml `runs_dir`). On a machine whose runs_dir
+# points at another project, yolo.train() would otherwise save to that project
+# (e.g. .../YOLO-Pruning-RKNN/runs/detect/rgb_synth-2) and run_all.py would never
+# find the outputs. exist_ok=True writes into the expected <name> dir instead of
+# auto-incrementing to <name>-2.
+_RUNS_DETECT = str(Path(__file__).resolve().parent / "runs" / "detect")
+
 
 def main() -> None:
     p = argparse.ArgumentParser()
@@ -88,7 +96,9 @@ def main() -> None:
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
+        project=_RUNS_DETECT,
         name=args.name or args.variant,
+        exist_ok=True,
         fraction=args.data_fraction,
         # --- Unified optimisation recipe: MUST match train_ds.py exactly so the
         # DS-YOLO-vs-baseline comparison isolates the CRFM architecture, not the
@@ -123,7 +133,7 @@ def main() -> None:
     try:
         run_name = args.name or args.variant
         m = yolo.val(data=args.data, imgsz=args.imgsz, split="test", verbose=False,
-                     name=f"val_{run_name}")
+                     project=_RUNS_DETECT, exist_ok=True, name=f"val_{run_name}")
         result = dict(
             precision=float(m.box.mp),
             recall=float(m.box.mr),
