@@ -68,18 +68,18 @@ encodes the capture and the golden through a shared backbone and fuses their
 multi-scale features ($P_3,P_4,P_5$) with a learnable Cross-Reference Fusion
 Module (CRFM). The CRFM adds only ${\sim}173\,$K parameters (${\sim}1.5\%$ of the
 model) and is identity-initialised, so when the reference is uninformative the
-network reduces exactly to the YOLOv8s baseline; the gate is self-regulating,
-enabling line-wide deployment without accuracy regression. Our main contribution
-is a characterisation of the conditions under which the reference yields a net
-benefit. For appearance-detectable defects on a single fixed board layout the
-reference is redundant: DS-YOLO performs on par with the RGB
-baseline (mAP@0.5${\approx}0.99$ for both across $10$--$50\%$ training-data
-fractions, mean over three seeds) and the gate remains inactive. On a controlled
-synthetic benchmark of reference-dependent defects (a component present and
-locally valid but missing or misplaced relative to the golden), which an
-appearance-only detector cannot resolve by construction, the gate becomes active
-and DS-YOLO raises recall from $0.73$ to $0.97$, confirming that the CRFM exploits
-the reference when it is informative. The detector runs on a working SMT cell in
+network reduces exactly to the YOLOv8s baseline; the gate is self-regulating, so a
+single model can be deployed without accuracy regression whether or not the
+reference is informative. Our main contribution is a characterisation of the
+conditions under which the reference yields a net benefit. For
+appearance-detectable defects the reference is redundant: DS-YOLO performs on par
+with the RGB baseline (mAP@0.5${\approx}0.99$ for both across $10$--$50\%$
+training-data fractions, mean over three seeds) and the gate remains inactive. On
+a controlled synthetic benchmark of reference-dependent defects (a component
+present and locally valid but missing or misplaced relative to the golden), which
+an appearance-only detector cannot resolve by construction, the gate becomes
+active and DS-YOLO raises recall from $0.73$ to $0.97$, indicating that the CRFM
+uses the reference when it is informative. The detector runs on a working SMT cell in
 which a vision server returns OK/NG verdicts to a Mitsubishi MELSEC-Q PLC over
 OPC~UA, and the PLC sorts boards with two articulated robots over CC-Link.
 \end{abstract}
@@ -105,8 +105,8 @@ adequate accuracy but incur high acquisition cost and adapt poorly to rapidly
 changing product mixes, making them ill-suited to low-volume, high-mix
 electronics manufacturing.
 
-A natural alternative is to combine an industrial camera with a deep object
-detector trained on the components of interest. The YOLO family of detectors
+An alternative is to pair an industrial camera with a deep object detector
+trained on the target components. The YOLO family of detectors
 \cite{redmon2016yolo,jocher2023yolov8} is well suited to this setting owing to
 its favourable accuracy/throughput trade-off, and several recent works have
 applied it to PCB defect detection
@@ -114,16 +114,16 @@ applied it to PCB defect detection
 A common limitation of these works is that the detector is treated as a generic
 object detector: it consumes only the captured frame and must internalise, in
 its weights, the expected appearance of every component at every position. This
-discards available information, because in an AVI cell a golden reference image
-of a known-good board is available; it specifies what the line is intended to
-produce. For a large and practically important class of defects the inspection
-problem is therefore one of identifying the differences between the capture and
-the reference rather than localising objects within a single image. This
-reformulation matters when a defect is reference-dependent, i.e.\ a component
-that is present and locally valid but missing or misplaced relative to the
-golden, for which appearance alone is insufficient to decide OK versus NG. It
-brings little benefit when defects are already locally visible in the capture;
-we therefore characterise which regime a given inspection task falls into.
+discards information that the AVI cell already provides: a golden reference image
+of a known-good board, which specifies the intended assembly. For a large and
+practically important class of defects the inspection problem is therefore one of
+identifying the differences between the capture and the reference rather than
+localising objects within a single image. This reformulation matters when a defect
+is reference-dependent, i.e.\ a component that is present and locally valid but
+missing or misplaced relative to the golden, for which appearance alone is
+insufficient to decide OK versus NG. It yields little benefit when defects are
+already locally visible in the capture; we therefore characterise which regime a
+given inspection task occupies.
 
 \medskip
 \noindent\textbf{Contributions.}
@@ -134,16 +134,16 @@ we therefore characterise which regime a given inspection task falls into.
     ($\sim\!1.5\,\%$ of the model) and is identity-initialised, so its scalar
     gate is self-regulating: it remains inactive (DS-YOLO $\equiv$ the YOLOv8s
     baseline, no regression) when the reference is uninformative and becomes
-    active when it is informative, yielding a single model deployable across the
-    line.
+    active when it is informative, yielding a single model that covers both
+    regimes.
     \item We characterise the conditions under which the golden reference improves
     detection, on a single SMT board with binary OK/NG labels over four component
     types (multi-board generalisation is future work). With a unified protocol and
     multi-seed runs we show the reference is redundant for appearance-detectable
     defects (gate $\alpha_\ell\!\approx\!0$, DS-YOLO $=$ RGB), and we construct a
     controlled synthetic benchmark of reference-dependent defects on which the
-    reference is provably necessary, where the gate becomes active and the CRFM
-    improves detection. This indicates that the module exploits a reference when
+    reference is necessary by construction, where the gate becomes active and the
+    CRFM improves detection. This indicates that the module draws on the reference when
     one is informative, rather than yielding a uniform accuracy gain.
     \item We integrate the detector into a working SMT inspection cell
     (Mitsubishi MELSEC-Q PLC, two articulated robots, Basler GigE camera over
@@ -166,19 +166,18 @@ Section~\ref{sec:concl} concludes.
 \paragraph*{Classical AOI.}
 Early AOI systems for PCB inspection rely on hand-crafted features such as
 template matching, normalised cross-correlation and morphological
-operators~\cite{moganti1996aoi}. They achieve high precision
-when the imaging conditions are tightly controlled but degrade rapidly with
-illumination, color or layout variations and require manual re-tuning for
-every new board.
+operators~\cite{moganti1996aoi}. They achieve high precision under tightly
+controlled imaging conditions but degrade under illumination, colour or layout
+variation and require manual re-tuning for each new board.
 
 \paragraph*{Deep detectors for PCB inspection.}
 Convolutional detectors (Faster R-CNN, SSD and the YOLO family) have largely
 replaced classical pipelines for component-level defect detection
 \cite{redmon2016yolo,jocher2023yolov8,xu2025yolo11solder,du2023yolombbi}.
 These detectors typically treat the inspection task as standard object detection
-on a single RGB frame and do not leverage the available golden reference. As a
-consequence, they are prone to over-fitting when the training set is small or
-class-imbalanced, conditions that are common in real production lines.
+on a single RGB frame and do not leverage the available golden reference.
+Consequently they tend to over-fit when the training set is small or
+class-imbalanced, as is frequently the case on production lines.
 
 \paragraph*{Reference- and template-based deep learning.}
 Several works exploit reference images or template comparison in related
@@ -266,11 +265,10 @@ and increases when the reference is necessary. The architecture therefore incurs
 no penalty when the golden is uninformative and exploits it when it is
 informative.
 
-\noindent\textbf{H3 (not data efficiency).} On a single fixed layout a
-capture-only detector saturates even with limited training data because it can
-memorise the single fixed layout; the reference does not improve data efficiency
-in this regime. The benefit of reference fusion is governed by defect type (H1),
-not by training-set size.
+\noindent\textbf{H3 (not data efficiency).} When defects are appearance-detectable,
+a capture-only detector saturates even with limited training data, so the
+reference does not improve data efficiency in this regime. The benefit of reference
+fusion is governed by defect type (H1), not by training-set size.
 
 %==============================================================================
 \section{Method: Dual-Stream YOLO}
@@ -421,7 +419,9 @@ modules at $P_3,P_4,P_5$, and the unmodified YOLOv8s PANet neck and Detect head.
 versus the YOLOv8s baseline is $\sim\!173\,$K parameters
 ($\sim\!1.5\,\%$ of the $11.3$\,M-parameter model) concentrated in the three
 CRFM gates; the compute overhead is one extra backbone forward pass on the
-golden image, $\sim\!50\,\%$ FLOPs at inference time. We initialise the
+golden, $\sim\!50\,\%$ additional FLOPs per forward, although at deployment the
+golden features can be cached per board type (Section~\ref{sec:exp}), reducing the
+residual overhead to the CRFM gates. We initialise the
 backbone, neck and head from the public Ultralytics YOLOv8s pretrained weights
 \cite{jocher2023yolov8}; the CRFM modules use Kaiming initialisation for
 $g_{\ell}$ and zero for $\alpha_{\ell}$.
@@ -439,11 +439,11 @@ to the optimiser or the objective.
 
 We integrate the detector into a working SMT inspection cell
 (Fig.~\ref{fig:cell}). The model deployed in production is the self-regulating
-DS-YOLO: on the current board it reduces to the RGB baseline (gate
-$\alpha_\ell\!\approx\!0$, Section~\ref{sec:exp}) at no accuracy cost, and the
-dual-stream path is retained so the same model will exploit the golden if
-reference-dependent defects (missing or misplaced parts) appear on future boards;
-this forward requirement motivates the self-regulating design.
+DS-YOLO: where the current defects are appearance-detectable it reduces to the RGB
+baseline (gate $\alpha_\ell\!\approx\!0$, Section~\ref{sec:exp}) at no accuracy
+cost, and the dual-stream path is retained so the same model will exploit the
+golden when reference-dependent defects (missing or misplaced parts) arise; this
+forward requirement motivates the self-regulating design.
 
 \begin{figure}[!t]
 \centering
@@ -527,23 +527,23 @@ Working resolution                         & $640\!\times\!640$\\
 \end{table}
 
 \paragraph*{Controlled reference-dependent benchmark.}
-The in-house defects above are largely appearance-detectable, and a single fixed
-layout allows a capture-only detector to memorise the correct board. To isolate
-the regime in which the reference is necessary, we synthesise a reference-dependent
-benchmark from the same board. Each sample draws a random subset of components to
-be present (the rest are inpainted out), which defines that sample's layout and
-its per-sample golden; the capture is the golden with a fraction of the present
+The in-house defects above are largely appearance-detectable, so a capture-only
+detector already resolves them from the capture alone. To isolate the regime in
+which the reference is necessary, we synthesise a reference-dependent benchmark
+from the in-house captures. Each sample draws a random subset of components to be
+present (the rest are inpainted out), which defines that sample's layout and its
+per-sample golden; the capture is the golden with a fraction of the present
 components corrupted by a missing (inpainted) or shift defect and relabelled NG,
 while the others remain OK. Because the correct layout varies per sample and is
 revealed only by the golden, a capture-only detector cannot distinguish a
 missing-NG slot from a legitimately absent one and must therefore use the
 reference. We generate ${\sim}1{,}500$ samples, split $70/15/15$ by source capture
-so that no raw board image appears in more than one of train, validation and test.
-This circularity is intentional: the benchmark defines a task that a capture-only
-model cannot solve, allowing us to test whether the gated reference path recovers
-the otherwise-unattainable performance. The benchmark therefore probes the fusion
-mechanism rather than evaluating realistic field performance; validating the
-effect on physically-induced reference-dependent defects is left to future work.
+so that no raw board image is shared across the train, validation and test splits.
+By design the task is unsolvable for a capture-only model, which lets us test
+whether the gated reference path recovers the otherwise unattainable performance.
+The benchmark therefore probes the fusion mechanism rather than evaluating
+realistic field performance; validating the effect on physically-induced
+reference-dependent defects is left to future work.
 
 \subsection{Implementation Details}
 Both models were trained for 100 epochs at input size $640\times640$ with batch
@@ -578,7 +578,7 @@ performs on par with it (Table~\ref{tab:inhouse}). Across
 $10$--$50\%$ training-data fractions (mean$\pm$std over three seeds) the two are
 equal within run-to-run variance at mAP@0.5${\approx}0.99$, and on the more
 demanding mAP@0.5:0.95 the gap is likewise within seed noise; injecting harder
-defects on the same board does not change this. The fusion gate is inactive
+appearance-detectable defects does not change this. The fusion gate is inactive
 throughout ($|\alpha_\ell|\!<\!10^{-3}$ at convergence for all three scales), so
 DS-YOLO is equivalent to the YOLOv8s baseline and incurs no accuracy regression.
 Under inference-time translation noise up to $20$\,px, with labels warped along
@@ -592,14 +592,15 @@ By construction the synthetic benchmark is unsolvable for a capture-only model: 
 missing-NG slot and a legitimately absent slot are pixel-identical in the capture,
 so the recall of the RGB baseline is capped before any training. The experiment is
 therefore not a performance comparison but a test of whether the gate becomes
-active and the CRFM exploits a reference it provably requires
+active and the CRFM exploits a reference it requires by construction
 (Table~\ref{tab:synth}). The RGB baseline plateaus at mAP@0.5$=0.85$, recall
 $=0.73$ (its by-design ceiling; the residual recall comes from the
 appearance-visible shift defects). DS-YOLO's gate becomes active: in every seed
 it opens strongly at $P_3$ or $P_4$ (peak $|\alpha_\ell|=0.71\pm0.03$ over three
-seeds), against $|\alpha_\ell|\!<\!10^{-3}$ on the in-house board. The model
-improves detection to mAP@0.5$=0.98$, recall $=0.97$, with the gain concentrated
-on the missing components that carry no local cue. Since at $\alpha_\ell\!=\!0$ DS-YOLO's forward
+seeds), against $|\alpha_\ell|\!<\!10^{-3}$ on the appearance-detectable in-house
+task. The model improves detection to mAP@0.5$=0.98$, recall $=0.97$, with the
+gain concentrated on the missing components, which provide no local appearance
+cue. Since at $\alpha_\ell\!=\!0$ DS-YOLO's forward
 pass is architecturally identical to single-stream YOLOv8s (BatchNorm frozen on
 the golden pass), the architecture cannot exceed the capture-only baseline other
 than through the CRFM, so the gate activation indicates that the module uses the
@@ -647,15 +648,16 @@ YOLOv8s (RGB, capture only)   & $0.949{\pm}.017$ & $0.725{\pm}.011$ & $0.853{\pm
 are inpainted and the RGB ceiling is fixed by the task design, so the numbers
 probe the fusion mechanism rather than estimate field accuracy. Validating the
 effect on physically-induced reference-dependent defects, with an
-inpainting-artefact control, is the most important next step.
+inpainting-artefact control, is a priority for future work.
 
 \subsection{Data Efficiency (H3)}
 We trained both models on $10\%$, $25\%$ and $50\%$ of the in-house set, using an
 identical seed-fixed subset at each fraction and averaging over three seeds
-(Table~\ref{tab:inhouse}). Although one might expect a reference to help most when
-data is scarce, the two models are equal within run-to-run variance at every
-fraction, including $10\%$ (${\approx}15$ images): a single fixed layout is learned
-from few captures, so the reference adds no measurable benefit. Reference fusion
+(Table~\ref{tab:inhouse}). Contrary to the expectation that a reference helps most
+when data is scarce, the two models are equal within run-to-run variance at every
+fraction, including $10\%$ (${\approx}15$ images): the appearance-detectable task is
+already saturated from few captures, so the reference adds no measurable benefit.
+Reference fusion
 therefore improves defect coverage (H1) rather than data efficiency (H3). We note
 that an earlier version of this study reported a low-data advantage that was later
 found to be a training-subset artefact.
@@ -674,13 +676,14 @@ for reference-dependent defects and negligible for appearance-detectable ones, a
 the self-regulating gate (H2) makes DS-YOLO safe to deploy even when the reference
 is uninformative, since it then reduces exactly to the baseline. The main limitation is that the reference-dependent
 gains are demonstrated on a synthetic benchmark; although it is
-constructed so the golden is provably necessary, confirming the effect on
-physically-induced defects (a board deliberately populated with misplacements) is
-the most important next step. Two further limitations: DS-YOLO assumes the golden
-is registrable to the capture (met here by a fixed camera and fixture), and like
-any supervised detector it can only flag labelled defect modes; combining it with
-an unsupervised anomaly branch (e.g.\ PaDiM~\cite{defard2021padim}) is a natural
-extension.
+constructed so the golden is necessary by construction, confirming the effect on
+physically-induced defects (a board deliberately populated with misplacements)
+remains the principal item of future work. The in-house evaluation also covers a
+single board layout, so generalisation across board layouts is not yet
+established. Two further limitations: DS-YOLO assumes the golden is registrable to
+the capture (met here by a fixed camera and fixture), and like any supervised
+detector it can only flag labelled defect modes; combining it with an unsupervised
+anomaly branch (e.g.\ PaDiM~\cite{defard2021padim}) is a natural extension.
 
 %==============================================================================
 \section{Conclusion}
@@ -690,13 +693,13 @@ We have presented Dual-Stream YOLO (DS-YOLO), a Siamese extension of YOLOv8s tha
 fuses the always-available golden reference into the detector via a lightweight
 ($\sim\!173\,$K-parameter), identity-initialised Cross-Reference Fusion Module.
 Rather than claim a uniform improvement, we characterise the conditions under which
-the reference provides a measurable benefit. On appearance-detectable defects from
-a single fixed board the reference is redundant and DS-YOLO performs on par
-with the RGB baseline (the fusion gate stays $\approx\!0$); on
+the reference provides a measurable benefit. On appearance-detectable defects the
+reference is redundant and DS-YOLO performs on par with the RGB baseline (the
+fusion gate stays $\approx\!0$); on
 reference-dependent defects (a component present but missing or misplaced relative
 to the golden) it is necessary, and DS-YOLO improves recall by $+24$ points
-(mAP@0.5 $0.85\!\rightarrow\!0.98$) over an appearance-only detector, with the gate
-active. The system is deployed on a
+($0.73\!\rightarrow\!0.97$) and mAP@0.5 from $0.85$ to $0.98$ over an
+appearance-only detector, with the gate active. The system is deployed on a
 real SMT cell integrating a Mitsubishi PLC, two articulated robots and a GigE
 camera over CC-Link and OPC~UA, adding only one extra backbone pass per board.
 Future work will validate the reference-dependent gain on physically-induced
